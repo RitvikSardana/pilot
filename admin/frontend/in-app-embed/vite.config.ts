@@ -61,6 +61,8 @@ export default defineConfig(({ mode }) => ({
     alias: [
       { find: '@frappe/cloud-sdk/api', replacement: path.resolve(__dirname, '../cloud-sdk/src/api.ts') },
       { find: '@frappe/cloud-sdk', replacement: path.resolve(__dirname, '../cloud-sdk/src/index.ts') },
+      // frappe-ui ships Inter but does not export the file.
+      { find: /^@inter-font(?=\?|$)/, replacement: path.resolve(__dirname, 'node_modules/frappe-ui/src/fonts/Inter/Inter.var.woff2') },
     ],
   },
 
@@ -88,7 +90,10 @@ export default defineConfig(({ mode }) => ({
         format: mode === 'sdk' ? 'es' : 'iife',
         name: mode === 'sdk' ? undefined : 'FrappeCloudSettingsEmbed',
         entryFileNames: "cloud-settings.js",
+        chunkFileNames: "chunks/[name]-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
+        // Desk loads one classic script, which cannot import chunks.
+        codeSplitting: mode === 'sdk',
       },
     },
   },

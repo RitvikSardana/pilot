@@ -123,3 +123,39 @@ test('the marketplace resumes a remembered task without submitting it again', as
   expect(submissions).toBe(0)
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('cloud-settings:tasks:example.test')!))).toEqual({})
 })
+
+test('fills a phone screen with a panel picker and a reachable close button', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await page.route('**/api/method/**', (route) => route.fulfill({ json: { message: {} } }))
+  await page.evaluate(async (runtime) => {
+    const { mountCloudSettings } = await import(runtime)
+    mountCloudSettings({ enabled: true, site_name: 'example.test' }, { panels: ['maintenance', 'advanced'] })
+  }, runtime)
+
+  const close = page.getByRole('button', { name: 'Close Cloud Settings' })
+  await expect(close).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Maintenance' })).toBeVisible()
+  await expect(page.locator('.cloud-settings-sidebar')).toBeHidden()
+
+  // Wait for the opening animation to finish before measuring.
+  await expect.poll(() => page.evaluate(() => {
+    const dialog = document.querySelector('fc-cloud-settings')!.shadowRoot!.querySelector('[role="dialog"]')!
+    return dialog.getAnimations({ subtree: true }).length
+  })).toBe(0)
+
+  const layout = await page.evaluate(() => {
+    const root = document.querySelector('fc-cloud-settings')!.shadowRoot!
+    const dialog = root.querySelector<HTMLElement>('[role="dialog"]')!
+    const button = root.querySelector<HTMLElement>('.cloud-settings-close')!.getBoundingClientRect()
+    return {
+      dialogWidth: dialog.getBoundingClientRect().width,
+      overflow: dialog.scrollWidth - dialog.clientWidth,
+      button: { left: button.left, right: button.right, top: button.top, width: button.width, height: button.height },
+    }
+  })
+  expect(layout.dialogWidth).toBe(375)
+  expect(layout.overflow).toBeLessThanOrEqual(0)
+  expect(layout.button.right).toBeLessThanOrEqual(375)
+  expect(layout.button.top).toBeGreaterThanOrEqual(0)
+  expect(Math.min(layout.button.width, layout.button.height)).toBeGreaterThanOrEqual(40)
+})

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pilot.exceptions import BenchError
-from pilot.utils import normalize_host, write_private_text
+from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text_locked
+from pilot.utils import normalize_host
 
 if TYPE_CHECKING:
     from pilot.config import RoutePolicy, SiteConfig
@@ -49,6 +51,7 @@ class SiteRename:
             self._pin_certificate_name()
             self._carry_old_hostname()
             self._refresh_pilot_auth_token()
+            self._rename_email_sender_name()
             self._update_default_site(self.old_name, self.new_name)
             self._rename_in_bench_toml(self.old_name, self.new_name)
             self._retarget_hostname_aliases(self.old_name, self.new_name)
@@ -172,7 +175,9 @@ class SiteRename:
     def _restore_site_config(self) -> None:
         """Byte for byte, undoing the pin and the carried hostname at once."""
         if self._original_site_config is not None:
-            write_private_text(self.new_path / "site_config.json", self._original_site_config)
+            path = self.new_path / "site_config.json"
+            with exclusive_file_lock(path):
+                replace_private_text_locked(path, self._original_site_config)
 
     def _move_site_directory_back(self) -> None:
         """Restore the real directory at the old path."""
@@ -186,14 +191,15 @@ class SiteRename:
         """Keep an existing certificate lineage across a rename."""
         from pilot.managers.nginx import cert_files_exist
 
-        config = self._read_site_config()
-        if config.get("cert_name") or not cert_files_exist(self.old_name):
-            return
-        if not self.keep_old_hostname and not self._tls_domains_besides(config, self.old_name, self.new_name):
-            # Do not pin a lineage for a hostname being returned to the pool.
-            return
-        config["cert_name"] = self.old_name
-        self._write_site_config(config)
+        with self._updating_site_config() as config:
+            if config.get("cert_name") or not cert_files_exist(self.old_name):
+                return
+            if not self.keep_old_hostname and not self._tls_domains_besides(
+                config, self.old_name, self.new_name
+            ):
+                # Do not pin a lineage for a hostname being returned to the pool.
+                return
+            config["cert_name"] = self.old_name
 
     def _tls_domains_besides(self, config: dict, *excluded: str) -> list[str]:
         """The site's TLS domains as it will be, ignoring the named hostnames."""
@@ -217,51 +223,57 @@ class SiteRename:
 
     def _carry_old_hostname(self) -> None:
         """Keep the old hostname and move its canonical setting if needed."""
-        config = self._read_site_config()
-        # The new name is the site's own now, so it is no longer one of its
-        # aliases; left there it would repeat inside one server_name.
-        domains = [
-            entry
-            for entry in (config.get("domains") or [])
-            if normalize_host(_domain_name(entry)) != normalize_host(self.new_name)
-        ]
-        known = {normalize_host(_domain_name(entry)) for entry in domains}
-        if self.keep_old_hostname and normalize_host(self.old_name) not in known:
-            old_route = self.site.config.route
-            domains.append(
-                {"domain": self.old_name, "route": old_route.to_dict()} if old_route else self.old_name
-            )
-        config["domains"] = domains
-        if self._new_route:
-            config["route"] = self._new_route.to_dict()
-            config["ssl"] = self._new_route.public_tls
+        with self._updating_site_config() as config:
+            # The new name is the site's own now, so it is no longer one of its
+            # aliases; left there it would repeat inside one server_name.
+            domains = [
+                entry
+                for entry in (config.get("domains") or [])
+                if normalize_host(_domain_name(entry)) != normalize_host(self.new_name)
+            ]
+            known = {normalize_host(_domain_name(entry)) for entry in domains}
+            if self.keep_old_hostname and normalize_host(self.old_name) not in known:
+                old_route = self.site.config.route
+                domains.append(
+                    {"domain": self.old_name, "route": old_route.to_dict()} if old_route else self.old_name
+                )
+            config["domains"] = domains
+            if self._new_route:
+                config["route"] = self._new_route.to_dict()
+                config["ssl"] = self._new_route.public_tls
 
-        # A canonical host naming the old site has to move with it, or nginx
-        # redirects every request to a hostname this site no longer answers to.
-        primary = (config.get("host_name") or "").split("://", 1)[-1]
-        if self.make_primary or (primary and normalize_host(primary) == normalize_host(self.old_name)):
-            scheme = (
-                self._new_route.public_scheme
-                if self._new_route
-                else ("https" if config.get("ssl") else "http")
-            )
-            config["host_name"] = f"{scheme}://{self.new_name}"
-        self._write_site_config(config)
+            # A canonical host naming the old site has to move with it, or nginx
+            # redirects every request to a hostname this site no longer answers to.
+            primary = (config.get("host_name") or "").split("://", 1)[-1]
+            if self.make_primary or (primary and normalize_host(primary) == normalize_host(self.old_name)):
+                scheme = (
+                    self._new_route.public_scheme
+                    if self._new_route
+                    else ("https" if config.get("ssl") else "http")
+                )
+                config["host_name"] = f"{scheme}://{self.new_name}"
 
     def _serves_tls(self) -> bool:
         """Whether any site domain terminates TLS on this host."""
         return bool(self._site_config_from(self._read_site_config()).tls_domains)
 
     def _refresh_pilot_auth_token(self) -> None:
-        config = self._read_site_config()
-        token = config.get("pilot_auth_token")
-        if not isinstance(token, str) or not token:
-            return
         from admin.backend.internal.session import Session
 
-        self._old_pilot_auth_token = token
-        config["pilot_auth_token"] = Session(self.bench).issue_pilot_token(self.new_name)
-        self._write_site_config(config)
+        with self._updating_site_config() as config:
+            token = config.get("pilot_auth_token")
+            if not isinstance(token, str) or not token:
+                return
+            self._old_pilot_auth_token = token
+            config["pilot_auth_token"] = Session(self.bench).issue_pilot_token(self.new_name)
+
+    def _rename_email_sender_name(self) -> None:
+        """Follow the new name unless someone set their own sender name."""
+        from pilot.config.site import email_sender_name
+
+        with self._updating_site_config() as config:
+            if config.get("email_sender_name") == email_sender_name(self.old_name):
+                config["email_sender_name"] = email_sender_name(self.new_name)
 
     def _revoke_old_pilot_auth_token(self) -> None:
         if not self._old_pilot_auth_token:
@@ -273,8 +285,14 @@ class SiteRename:
     def _read_site_config(self) -> dict:
         return _load_site_config(self.new_path / "site_config.json")
 
-    def _write_site_config(self, config: dict) -> None:
-        write_private_text(self.new_path / "site_config.json", json.dumps(config, indent=1))
+    @contextlib.contextmanager
+    def _updating_site_config(self) -> Iterator[dict]:
+        """Read, change and atomically write site_config.json under its lock."""
+        path = self.new_path / "site_config.json"
+        with exclusive_file_lock(path):
+            config = _load_site_config(path)
+            yield config
+            replace_private_text_locked(path, json.dumps(config, indent=1))
 
     def run_followups(self, on_progress: Callable[[str], None]) -> None:
         """Issue a certificate for the new hostname after nginx publishes it."""

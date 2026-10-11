@@ -256,11 +256,14 @@ Outgoing mail lives in the bench's `sites/common_site_config.json`, under the ke
 ```
 
 - `mail_server` is the outgoing mail server, `mail_port` the port it listens on
-- `use_tls` upgrades the connection with STARTTLS; `0` connects over SSL instead
+- `use_tls` upgrades the connection with STARTTLS
+- `use_ssl` connects over SSL instead, with `use_tls` set to `0`. The framework reads `use_ssl` from Frappe v16 with frappe/frappe#44142.
 - `mail_port` may be left at `0`, which means 465 with SSL and 587 with STARTTLS
 - `auto_email_id` is the address alerts are sent from, and the login name by default
 - `mail_login` only when the server expects a login name that is not that address
 - a relay that takes no credentials gets `disable_mail_smtp_authentication` instead of a password
+
+Each site's `site_config.json` has `email_sender_name`, the display name on mail that the site sends through this mailbox without a sender name of its own, such as a password reset. Mail that a user sends keeps that user's name. A restore keeps the target site's value. Pilot sets it from the first label of the site name when it creates the site, and changes it when the site is renamed. It changes `-` and `_` to spaces and starts each word with a capital letter, such as `Acme Corp` for `acme-corp.example.com`. A rename keeps a value that you set yourself.
 
 The certificate is verified in both modes, so a server with a self-signed certificate is refused rather than trusted silently.
 

@@ -37,6 +37,7 @@ def test_completes_setup_wizard(bench, page):
                 page,
                 admin_password=bench.admin_password,
                 db_type=DB_TYPE,
+                framework_branch="develop",
             )
     except Exception as err:
         # Attach the failed setup task's output so the failure is diagnosable

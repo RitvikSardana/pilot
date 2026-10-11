@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from pilot.config import BenchConfig, RoutePolicy, SiteConfig
+from pilot.config.site import email_sender_name
 from pilot.core.bench import Bench
 from pilot.core.site import Site
 from pilot.core.site.provisioning import SiteProvisioner
@@ -101,3 +102,19 @@ def test_enable_scheduler_fails_loudly(tmp_path: Path) -> None:
             assert "site1.example.com" in str(error)
         else:
             raise AssertionError("expected BenchError")
+
+
+def test_a_new_site_sends_mail_under_its_first_label_in_title_case(tmp_path: Path) -> None:
+    provisioner = _provisioner(tmp_path)
+    site = Site(SiteConfig(name="site1.example.com", apps=["frappe"]), provisioner.bench)
+    site.path.mkdir(parents=True)
+    (site.path / "site_config.json").write_text(json.dumps({"db_name": "site1"}))
+
+    provisioner.write_email_sender_name(site)
+
+    persisted = json.loads((site.path / "site_config.json").read_text())
+    assert persisted == {"db_name": "site1", "email_sender_name": "Site1"}
+
+
+def test_the_sender_name_turns_dashes_and_underscores_into_spaces() -> None:
+    assert email_sender_name("north_star--labs.example.com") == "North Star Labs"

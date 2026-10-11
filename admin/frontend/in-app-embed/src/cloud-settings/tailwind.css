@@ -30,5 +30,13 @@
     width: 100%;
     max-width: none;
     border-radius: 0;
+    /* Keep content clear of the notch and home indicator in a full-screen app. */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+
+  .cloud-settings-close {
+    top: calc(0.5rem + env(safe-area-inset-top, 0px));
+    right: calc(0.5rem + env(safe-area-inset-right, 0px));
   }
 }

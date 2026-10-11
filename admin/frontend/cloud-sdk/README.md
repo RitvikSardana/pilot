@@ -14,13 +14,13 @@ The server checks access on every call. The browser does not receive Pilot or Ce
 
 ## Install
 
-Build the package from `admin/frontend/cloud-sdk` with `npm run build`. Then install the built package in your app:
-
 ```sh
-npm install /path/to/pilot/admin/frontend/cloud-sdk
+npm install @frappe-dev/cloud-sdk
 ```
 
-The package includes the UI and its styles. You do not need to add Vue, Frappe UI, or a stylesheet to your app. The UI loads when you first open it.
+The package includes the UI and its styles. You do not need to add Vue, Frappe UI, or a stylesheet to your app. The UI loads when you first open it, and each panel loads when it is first shown. Your bundler must support dynamic `import()`, as Vite, webpack, and esbuild do.
+
+The dialog uses the Inter font. If the page does not load Inter, the dialog adds it to the page the first time it opens.
 
 ## Open Cloud Settings
 
@@ -70,7 +70,7 @@ await openCloudSettings({
 
 Panel names: `billing`, `marketplace`, `analytics`, `domains`, `backups`, `usage`, `site-config`, `maintenance`, and `advanced`.
 
-The dialog uses Espresso components. On a phone, it fills the viewport and has a panel selector. On a desktop, it has a sidebar. Its styles, menus, dialogs, alerts, and toasts stay inside a shadow root. Closing removes the UI and returns focus to the button. Opening again replaces the current dialog. Closing also cancels a pending open.
+The dialog uses Espresso components. On a phone, it fills the viewport and has a panel selector. It keeps clear of the notch and the home indicator when the page sets `viewport-fit=cover` in its viewport meta tag. On a desktop, it has a sidebar. Its styles, menus, dialogs, alerts, and toasts stay inside a shadow root. Closing removes the UI and returns focus to the button. Opening again replaces the current dialog. Closing also cancels a pending open.
 
 ## Use API calls without the dialog
 
@@ -84,6 +84,8 @@ const domains = await getDomains()
 ```
 
 The root import and `/api` export the same API calls and TypeScript models. Use `/api` when you only need data.
+
+Build your own UI on the read calls, for example a plan badge or a banner. For changes, open the dialog on the right panel, such as `openCloudSettings({ tab: 'billing' })`. The action calls follow the dialog's flows, and their steps can change between versions. Payment setup is an example.
 
 | Area | Read calls | Action calls |
 | --- | --- | --- |
@@ -120,7 +122,7 @@ Desk loads `/embed/cloud-settings/cloud-settings.js` from Pilot. It exposes `win
 
 Run `npm test` and `npm run build` in this package. Run `npm run build` in `admin/frontend/in-app-embed` to build the Pilot browser bundle. Build both outputs after a UI change. Refresh local file dependencies before you rebuild a consumer such as Raven.
 
-To run browser regression tests, install the dependencies in `admin/frontend/dashboard` and `admin/frontend/in-app-embed`, then build this package. Run `npx playwright install chromium` and `npx playwright test --config cloud-settings.config.ts` from `admin/frontend/dashboard`. The tests check dialog cleanup, custom feedback translations, and task cancellation and resume. CI runs these tests in the MariaDB browser job.
+To run browser regression tests, install the dependencies in `admin/frontend/dashboard` and `admin/frontend/in-app-embed`, then build this package. Run `npx playwright install chromium` and `npx playwright test --config cloud-settings.config.ts` from `admin/frontend/dashboard`. The tests check dialog cleanup, custom feedback translations, task cancellation and resume, and the phone layout. CI runs these tests in the MariaDB browser job.
 
 To test all panels with sample data, run `python3 -m http.server 8123` in this package. Open `http://localhost:8123/tests/embed.html`. No real payment or site action runs in this fixture.
 

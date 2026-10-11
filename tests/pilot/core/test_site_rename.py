@@ -576,3 +576,21 @@ def test_releasing_a_hostname_drops_the_lineage_when_nothing_else_uses_tls(tmp_p
         _rename(bench, keep_old_hostname=False)
 
     assert "cert_name" not in _config(bench, NEW)
+
+
+def test_the_sender_name_follows_the_rename(tmp_path: Path) -> None:
+    bench = _bench(tmp_path)
+    _site(bench, OLD, email_sender_name="Old")
+
+    _rename(bench)
+
+    assert _config(bench, NEW)["email_sender_name"] == "New"
+
+
+def test_a_custom_sender_name_survives_a_rename(tmp_path: Path) -> None:
+    bench = _bench(tmp_path)
+    _site(bench, OLD, email_sender_name="Acme Support")
+
+    _rename(bench)
+
+    assert _config(bench, NEW)["email_sender_name"] == "Acme Support"

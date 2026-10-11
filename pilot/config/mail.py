@@ -20,6 +20,7 @@ CONFIG_KEYS = (
     "mail_password",
     "auto_email_id",
     "use_tls",
+    "use_ssl",
     "disable_mail_smtp_authentication",
 )
 
@@ -91,7 +92,7 @@ class MailConfig:
             email=config.get("auto_email_id") or config.get("mail_login", ""),
             login=config.get("mail_login", ""),
             password=config.get("mail_password", ""),
-            use_ssl=not config.get("use_tls", 1) if config.get("mail_server") else False,
+            use_ssl=bool(config.get("mail_server") and config.get("use_ssl", not config.get("use_tls", 1))),
         )
 
     def write(self, sites_path: Path) -> None:
@@ -113,6 +114,8 @@ class MailConfig:
             config["mail_port"] = endpoint.port
             config["auto_email_id"] = endpoint.sender
             config["use_tls"] = 0 if endpoint.is_ssl else 1
+            if endpoint.is_ssl:
+                config["use_ssl"] = 1
             if endpoint.username:
                 config["mail_login"] = endpoint.username
                 config["mail_password"] = self.password

@@ -38,7 +38,7 @@ def complete_dev_wizard(
     # afterwards). We keep the repo default.
     expect(page.get_by_text("Customize your bench")).to_be_visible(timeout=30_000)
     if framework_branch:
-        _choose_select(page, "Frappe branch", framework_branch)
+        _choose_combobox_button(page, "Frappe branch", framework_branch)
 
     page.get_by_role("button", name="Set up bench").click()
     # pilot init clones the framework and builds the venv; this is the long pole.
@@ -78,3 +78,9 @@ def _choose_select(page: Page, label: str, option_name: str) -> None:
     """Choose a reka-ui Select option by combobox label."""
     page.get_by_role("combobox", name=label).click()
     page.get_by_role("option", name=option_name).click()
+
+
+def _choose_combobox_button(page: Page, label: str, option_name: str) -> None:
+    """Choose an option in a Frappe UI Combobox with `trigger="button"`."""
+    page.get_by_role("button", name=label).click()
+    page.get_by_role("option", name=option_name, exact=True).click()

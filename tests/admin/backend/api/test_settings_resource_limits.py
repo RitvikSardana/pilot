@@ -175,6 +175,7 @@ def test_patch_persists_mail_settings_to_common_site_config(tmp_path: Path) -> N
     assert stored["mail_login"] == "alerts@example.com"
     assert stored["mail_password"] == "secret"
     assert stored["use_tls"] == 0
+    assert stored["use_ssl"] == 1
     read_back = client.get("/api/v1/settings").get_json()["mail"]
     assert read_back["password_set"] is True
     assert "secret" not in str(read_back)

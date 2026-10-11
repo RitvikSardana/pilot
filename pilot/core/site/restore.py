@@ -21,7 +21,9 @@ RESTORE_PARTS = ("database", "public", "private", "config")
 _STDERR_TAIL_BYTES = 4096
 # Keys that tie a config to its own database, cache, host or Pilot, so they stay as this site has them.
 LOCAL_CONFIG_PREFIXES = ("db_", "redis_", "pilot_", "atlas_")
-LOCAL_CONFIG_KEYS = frozenset({"rds_db", "host_name", "installed_apps", "maintenance_mode", "pause_scheduler"})
+LOCAL_CONFIG_KEYS = frozenset(
+    {"rds_db", "host_name", "installed_apps", "maintenance_mode", "pause_scheduler", "email_sender_name"}
+)
 
 
 def backup_part(filename: str) -> str | None:
@@ -68,7 +70,11 @@ class BackupRun:
         config = self.files.get("config")
         if not config:
             return {}
-        return {key: value for key, value in json.loads(config.read_text()).items() if not is_local_config_key(key)}
+        return {
+            key: value
+            for key, value in json.loads(config.read_text()).items()
+            if not is_local_config_key(key)
+        }
 
 
 def is_local_config_key(key: str) -> bool:
