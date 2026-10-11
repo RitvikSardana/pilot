@@ -96,8 +96,8 @@ class ForkRuntime:
         if not self.owns_processes:
             self.stack.close()
             return
+        assert self.lease is not None
+        fcntl.flock(self.lease.fileno(), fcntl.LOCK_UN)
         with exclusive_file_lock(self.bench.path / "fork-runtime"):
-            assert self.lease is not None
-            fcntl.flock(self.lease.fileno(), fcntl.LOCK_UN)
             fcntl.flock(self.lease.fileno(), fcntl.LOCK_EX)
             self.stack.close()

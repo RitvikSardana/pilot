@@ -1,5 +1,6 @@
 import socket
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from threading import Event
 
 import pytest
@@ -7,7 +8,8 @@ import pytest
 from pilot.core.bench.cloning import runtime
 
 
-def test_temporary_redis_owner_waits_for_other_clone(source, monkeypatch):
+@pytest.mark.parametrize("restart", [False, True])
+def test_temporary_redis_owner_waits_for_other_clone(source, monkeypatch, restart):
     if not runtime.redis_server_binary():
         pytest.skip("Redis server unavailable")
     with socket.socket() as cache, socket.socket() as queue:
@@ -22,6 +24,7 @@ def test_temporary_redis_owner_waits_for_other_clone(source, monkeypatch):
     shutdown_waiting = Event()
     flock = runtime.fcntl.flock
     processes = []
+    runtimes = []
     popen = runtime.subprocess.Popen
 
     def observe_lock(descriptor, operation):
@@ -38,7 +41,9 @@ def test_temporary_redis_owner_waits_for_other_clone(source, monkeypatch):
     monkeypatch.setattr(runtime.subprocess, "Popen", spawn)
 
     def clone(ready, finish):
-        with runtime.ForkRuntime(source, allow_existing=True):
+        services = runtime.ForkRuntime(source, allow_existing=True)
+        runtimes.append(services)
+        with services:
             ready.set()
             assert finish.wait(10)
 
@@ -50,18 +55,27 @@ def test_temporary_redis_owner_waits_for_other_clone(source, monkeypatch):
             if not owner_ready.wait(5):
                 owner.result(timeout=1)
                 pytest.fail("Owner runtime did not become ready")
+            if restart:
+                for process in processes:
+                    runtime.ForkRuntime.stop(process)
             borrower = executor.submit(clone, borrower_ready, finish_borrower)
             assert borrower_ready.wait(5)
             finish_owner.set()
             assert shutdown_waiting.wait(5)
             assert not owner.done()
             assert all(runtime.ForkRuntime.has_existing_redis(port) for port in ports)
-            assert len(processes) == 2
+            assert len(processes) == (4 if restart else 2)
         finally:
             finish_owner.set()
             finish_borrower.set()
-        owner.result(timeout=10)
-        if borrower is not None:
-            borrower.result(timeout=10)
+            try:
+                owner.result(timeout=5)
+                if borrower is not None:
+                    borrower.result(timeout=5)
+            finally:
+                for services in runtimes:
+                    with suppress(OSError, ValueError):
+                        if services.lease is not None and not services.lease.closed:
+                            runtime.fcntl.flock(services.lease.fileno(), runtime.fcntl.LOCK_UN)
     assert all(process.poll() is not None for process in processes)
     assert not any(runtime.ForkRuntime.has_existing_redis(port) for port in ports)
