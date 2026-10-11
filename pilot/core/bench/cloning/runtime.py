@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import fcntl
 import socket
 import subprocess
 import time
 from contextlib import ExitStack
 
 from pilot.exceptions import BenchError
+from pilot.internal.atomic_file import exclusive_file_lock
 from pilot.managers.redis import RedisManager, redis_server_binary
+from pilot.utils import open_private
 
 
 class ForkRuntime:
@@ -16,24 +19,34 @@ class ForkRuntime:
         self.bench = bench
         self.allow_existing = allow_existing
         self.stack = ExitStack()
+        self.owns_processes = False
+        self.lease = None
 
     def __enter__(self):
         binary = redis_server_binary()
         if not binary:
             raise BenchError("Redis is required to fork a development bench.")
+        with exclusive_file_lock(self.bench.path / "fork-runtime"):
+            try:
+                self.lease = self.stack.enter_context(
+                    open_private(self.bench.path / ".fork-runtime-users", mode="a")
+                )
+                fcntl.flock(self.lease.fileno(), fcntl.LOCK_SH)
+                self.start_services(binary)
+            except BaseException:
+                self.stack.close()
+                raise
+        return self
+
+    def start_services(self, binary: str) -> None:
         ports = (self.bench.config.redis.cache_port, self.bench.config.redis.queue_port)
         if not self.allow_existing or not all(self.has_existing_redis(port) for port in ports):
             RedisManager(self.bench.config.redis, self.bench).generate_configs()
-        try:
-            for name, port in (
-                ("redis_cache", self.bench.config.redis.cache_port),
-                ("redis_queue", self.bench.config.redis.queue_port),
-            ):
-                self.start(binary, name, port)
-        except BaseException:
-            self.stack.close()
-            raise
-        return self
+        for name, port in (
+            ("redis_cache", self.bench.config.redis.cache_port),
+            ("redis_queue", self.bench.config.redis.queue_port),
+        ):
+            self.start(binary, name, port)
 
     def start(self, binary: str, name: str, port: int) -> None:
         if self.allow_existing and self.has_existing_redis(port):
@@ -46,6 +59,7 @@ class ForkRuntime:
             cwd=self.bench.path,
         )
         self.stack.callback(self.stop, process)
+        self.owns_processes = True
         for _ in range(100):
             if process.poll() is not None:
                 raise BenchError(f"Fork Redis {name} exited; inspect {log.name}.")
@@ -79,4 +93,11 @@ class ForkRuntime:
                 process.wait()
 
     def __exit__(self, *args) -> None:
-        self.stack.close()
+        if not self.owns_processes:
+            self.stack.close()
+            return
+        with exclusive_file_lock(self.bench.path / "fork-runtime"):
+            assert self.lease is not None
+            fcntl.flock(self.lease.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(self.lease.fileno(), fcntl.LOCK_EX)
+            self.stack.close()

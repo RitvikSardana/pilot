@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import logging
 import os
 import shutil
 import stat
@@ -10,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from pilot.core.bench.artifacts import BenchArtifacts
+from pilot.exceptions import CommandError
 from pilot.internal.atomic_file import exclusive_file_lock
 from pilot.managers.node_dependencies import NodeDependencies
 from pilot.utils import get_yarn_bin, run_command
@@ -152,6 +154,12 @@ class BuildArtifacts:
         paths = self.paths
         if "sites/assets" not in paths:
             return
+        try:
+            self.publish(key, paths)
+        except (OSError, CommandError) as error:
+            logging.warning("Skipping asset cache publication: %s", error)
+
+    def publish(self, key: str, paths: list[str]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with exclusive_file_lock(self.root / f"{key}.guard"):
             target = self.root / key

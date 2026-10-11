@@ -2,10 +2,45 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from pilot.core.bench import Bench
 from pilot.managers.environment import PythonEnvManager
 
 from .git_repository import git
+
+
+@pytest.mark.parametrize("failure", ["directory", "copy", "rename"])
+def test_asset_cache_failure_keeps_completed_build(source, monkeypatch, caplog, failure):
+    from pathlib import Path
+
+    from pilot.core.bench.artifacts import BenchArtifacts
+    from pilot.core.bench.build_artifacts import BuildArtifacts
+    from pilot.exceptions import CommandError
+
+    assets = source.sites_path / "assets"
+    (assets / "app.js").write_text("completed build")
+    cache = BuildArtifacts(source)
+
+    def fail(*args, **kwargs):
+        if failure == "copy":
+            raise CommandError("No space left on device")
+        raise PermissionError("Cache is read-only")
+
+    with monkeypatch.context() as patcher:
+        if failure == "directory":
+            patcher.setattr(Path, "mkdir", fail)
+        elif failure == "copy":
+            patcher.setattr(BenchArtifacts, "copy_directory", fail)
+        else:
+            patcher.setattr(Path, "rename", fail)
+        cache.capture("build-key")
+    assert (assets / "app.js").read_text() == "completed build"
+    assert "Skipping asset cache publication" in caplog.text
+    assert not (cache.root / "build-key").exists()
+    assert not list(cache.root.glob("build-*"))
+    cache.capture("build-key")
+    assert (cache.root / "build-key/sites/assets/app.js").read_text() == "completed build"
 
 
 def test_dependency_copy_seeds_changed_lockfile_without_reusing_install_stamp(tmp_path):
