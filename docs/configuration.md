@@ -228,6 +228,10 @@ Pilot configures PROXY protocol v2 when an HTTPS origin needs it. See [Per-domai
 
 `[frappe_cloud] url` is the Frappe Cloud that a site restore copies backups from. The default is `https://cloud.frappe.io`. Set it to use another Frappe Cloud, for example a local Press during development.
 
+### App update rollout
+
+When `[central] enabled` is set, Pilot offers each app update to a share of servers that grows over time. Central Settings holds the steps: a start percent, a step percent and an interval in hours. Each host picks a fixed number from 1 to 100 one time and keeps it in `system/rollout-number`. The Apps page shows an update when this number is at or below the start percent plus one step for each full interval since the bench first saw the update. `<bench>/app-rollout.json` keeps that time for each app. A new marketplace release starts at the start percent again. An app that follows a branch keeps its time when new commits arrive. Without Central, or when Central sends no rollout steps, every update shows at once. When Central does not answer or sends bad steps, new updates wait until it answers again. The rollout only controls when an update shows. A person still starts each update.
+
 ### Telemetry
 
 `[telemetry]` is one credential for both shippers. `endpoint` is the base URL of the region's Datum, with no path: metrics append `/v1/ingest` and logs append `/v1/logs/ingest`. `token` is the JWT Central mints for the region, which Datum tells apart by route rather than by token, so one serves both. `logs_enabled` and `metrics_enabled` switch each shipper independently.

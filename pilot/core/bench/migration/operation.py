@@ -441,6 +441,10 @@ class MigrationOperation:
         for site in self.sites:
             if site.backup_status == "backed_up":
                 self.bench.site(site.name).migration_backup.discard()
+        if self.kind == "update":
+            # New commits may land before the next check, so the next update must start again.
+            for revision in self.apps:
+                self.bench.app_rollout.forget(revision.name)
         self._transition("completed")
 
     def _union_touched_tables(self, site: SiteProgress) -> None:
