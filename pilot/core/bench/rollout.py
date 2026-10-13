@@ -73,7 +73,7 @@ class AppRollout:
         time when new commits arrive, or a busy branch would never reach every server."""
         with exclusive_file_lock(self.path):
             clocks = self._read()
-            clock = clocks.get(app_name)
+            clock = clocks.get(app_name) or {}
             try:
                 first_seen = datetime.fromisoformat(clock["first_seen"]).astimezone(UTC)
                 keeps_clock = not restart_on_new_target or clock.get("target") == target
@@ -90,10 +90,13 @@ class AppRollout:
 
     def get_percent(self, first_seen: datetime) -> int:
         """The start percent plus one step for each full interval since `first_seen`."""
+        settings = self.settings
+        assert settings, "Only called when Central sent rollout steps."
+
         hours = (datetime.now(UTC) - first_seen).total_seconds() / 3600
         # A clock set back in time must not drop below the start percent.
-        steps = max(0, int(hours // self.settings["interval_hours"]))
-        return min(100, self.settings["start_percent"] + steps * self.settings["step_percent"])
+        steps = max(0, int(hours // settings["interval_hours"]))
+        return min(100, settings["start_percent"] + steps * settings["step_percent"])
 
     def forget(self, app_name: str) -> None:
         """Remove the app's clock when it is up to date, so its next update starts at the start percent."""
