@@ -9,6 +9,10 @@ from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text
 
 if TYPE_CHECKING:
     from pilot.core.bench import Bench
+    from pilot.core.bench.migration.operation import AppRevision
+
+# Datum rejects a log message over 8 KiB, and one character takes up to 4 bytes.
+_LOG_MESSAGE_LIMIT = 2000
 
 
 class AppRollout:
@@ -100,6 +104,30 @@ class AppRollout:
             clocks = self._read()
             if clocks.pop(app_name, None) is not None:
                 replace_private_text_locked(self.path, json.dumps(clocks, indent=2))
+
+    def log_updates(
+        self, revisions: list["AppRevision"], status: Literal["success", "failed"], error: str = ""
+    ) -> None:
+        """One line per updated app in `logs/app_updates.json.log`, which fluent-bit ships to Datum."""
+        from pilot.core.server import Server
+
+        try:
+            rollout_number = Server().get_rollout_number()
+            with (self.bench.logs_path / "app_updates.json.log").open("a") as log_file:
+                for revision in revisions:
+                    line = {
+                        "time": datetime.now(UTC).isoformat(),
+                        "level": "info" if status == "success" else "error",
+                        "message": error[:_LOG_MESSAGE_LIMIT] or status,
+                        "status": status,
+                        "app": revision.name,
+                        "from_commit": revision.sha,
+                        "to_commit": revision.target_sha,
+                        "rollout_number": rollout_number,
+                    }
+                    log_file.write(json.dumps(line) + "\n")
+        except OSError as log_error:
+            print(f"Could not write the app update log: {log_error}", flush=True)
 
     def _read(self) -> dict:
         """A missing or damaged file starts every clock again, which only delays updates."""
