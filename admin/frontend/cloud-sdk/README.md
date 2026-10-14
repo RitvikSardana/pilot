@@ -1,4 +1,4 @@
-# @frappe-dev/cloud-sdk
+# @frappe/cloud-sdk
 
 Use Cloud Settings in a Frappe app. The SDK provides typed API calls and a ready-to-use settings dialog. It works in Desk, React, Vue, and plain browser pages.
 
@@ -15,7 +15,7 @@ The server checks access on every call. The browser does not receive Pilot or Ce
 ## Install
 
 ```sh
-npm install @frappe-dev/cloud-sdk
+npm install @frappe/cloud-sdk
 ```
 
 The package includes the UI and its styles. You do not need to add Vue, Frappe UI, or a stylesheet to your app. The UI loads when you first open it, and each panel loads when it is first shown. Your bundler must support dynamic `import()`, as Vite, webpack, and esbuild do.
@@ -27,7 +27,7 @@ The dialog uses the Inter font. If the page does not load Inter, the dialog adds
 Show your button only when `isCloudSettingsAvailable()` returns `true`. Call `openCloudSettings()` when the user clicks it.
 
 ```ts
-import { isCloudSettingsAvailable, openCloudSettings, closeCloudSettings } from '@frappe-dev/cloud-sdk'
+import { isCloudSettingsAvailable, openCloudSettings, closeCloudSettings } from '@frappe/cloud-sdk'
 
 const available = await isCloudSettingsAvailable()
 
@@ -77,7 +77,7 @@ The dialog uses Espresso components. On a phone, it fills the viewport and has a
 You can build your own pages, panels, or controls with the API calls. The `/api` import does not load the shared UI. Your app controls the layout and handles loading, empty states, errors, and success feedback.
 
 ```ts
-import { getBilling, getDomains } from '@frappe-dev/cloud-sdk/api'
+import { getBilling, getDomains } from '@frappe/cloud-sdk/api'
 
 const billing = await getBilling()
 const domains = await getDomains()

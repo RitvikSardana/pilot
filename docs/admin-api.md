@@ -76,6 +76,8 @@ Every `/sites/<name>/...` route accepts the site's directory name or any hostnam
 
 `GET /sites/<name>` includes `url` and `tls`. The route policy supplies the public scheme for both values.
 
+`GET /sites` and `GET /sites/<name>` include `primary_domain`: the host of the site's `host_name` when it is one of the site's domains, otherwise the directory name.
+
 `DELETE /sites/<name>` queues `drop-site`. Frappe takes a full backup before the drop; pass `?no_backup=1` to skip it on large sites you do not need to keep.
 
 `GET /sites/<name>/domains` returns one row for each hostname. Each row has `domain`, `is_site`, `is_primary`, `public_scheme`, and `tls`.
@@ -86,7 +88,7 @@ The login signs in the user the token names. A token whose `sub` is an email sig
 
 ### Site To Central
 
-A site calls Central through `GET` or `POST /sites/<name>/central/<method>`. Pilot forwards the call with this host's Pilot credential, so Central knows the server and its team. Pilot forwards only these methods and refuses others with `403`:
+A site calls Central through `GET` or `POST /sites/<name>/central/<method>`. Pilot forwards the call with this host's Pilot credential, so Central knows the server and its team. Pilot removes the reserved `cmd` field from the request body so it cannot override the method in the URL. Pilot forwards only these methods and refuses others with `403`:
 
 | Method | Use |
 |---|---|

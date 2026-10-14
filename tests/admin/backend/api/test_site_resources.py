@@ -117,3 +117,18 @@ def test_site_creation_rejects_symlinked_sites_root(tmp_path: Path) -> None:
 
     assert create.status_code == 422
     queue.assert_not_called()
+
+
+def test_list_sites_labels_each_site_by_its_primary_domain(tmp_path: Path) -> None:
+    bench_root = tmp_path / "benches" / "current"
+    client = _client(bench_root)
+    _write_site(bench_root, "plain.localhost")
+    _write_site(bench_root, "custom.localhost")
+    config = {"installed_apps": [], "domains": ["erp.example.com"], "host_name": "https://erp.example.com"}
+    (bench_root / "sites" / "custom.localhost" / "site_config.json").write_text(json.dumps(config))
+
+    response = client.get("/api/v1/sites")
+
+    labels = {site["name"]: site["primary_domain"] for site in response.get_json()}
+    assert response.status_code == 200
+    assert labels == {"plain.localhost": "plain.localhost", "custom.localhost": "erp.example.com"}

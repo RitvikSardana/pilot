@@ -6,7 +6,7 @@ from flask import jsonify, request
 
 from admin.backend.api.responses import error_response
 from admin.backend.api.v1.sites import sites_bp
-from admin.backend.api.v1.sites.shared import site_name
+from admin.backend.api.v1.sites.shared import malformed_body, site_name
 from admin.backend.middleware import require_scope
 from pilot.integrations.central import CentralClient, CentralClientError
 
@@ -32,6 +32,8 @@ def central_proxy(name: str, method_path: str):
             "central_method_forbidden", f"Central method '{method_path}' is not permitted.", 403
         )
     data = request.get_json(silent=True) if request.method == "POST" else None
+    if data is not None and not isinstance(data, dict):
+        return malformed_body()
     try:
         return jsonify(CentralClient().forward(method_path, request.method, data))
     except CentralClientError as exc:

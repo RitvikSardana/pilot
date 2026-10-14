@@ -21,6 +21,7 @@ import SiteSettings from '@/components/sites/Settings.vue'
 import Activities from '@/pages/Activities.vue'
 
 import { apiErrorMessage, hasApiError } from '@/api/client'
+import { tasksApi } from '@/api/tasks'
 import { useAppRegistry } from '@/composables/apps/useAppRegistry'
 import { useBreadcrumbs } from '@/composables/common/useBreadcrumbs'
 import { useIsMobile } from '@/composables/common/useIsMobile'
@@ -28,6 +29,7 @@ import { useSite } from '@/composables/sites/useSite'
 import { useSiteStorage } from '@/composables/sites/useSiteStorage'
 import { errorMessage } from '@/utils/error'
 import { toSentenceCase } from '@/utils/format'
+import { siteLabel } from '@/utils/taskFormat'
 import { openTaskDetailPage } from '@/utils/taskRoute'
 
 const route = useRoute()
@@ -141,6 +143,22 @@ const goToAnalytics = () => {
   router.push({ name: 'Analytics', query: { view: 'site', window: '24h', site: siteName } })
 }
 
+const viewJobs = () => router.push({ name: 'Tasks', query: { site: siteName } })
+
+const viewCreateJob = async () => {
+  try {
+    const tasks = await tasksApi.list()
+    const job = tasks.find(
+      (task) => ['queued', 'running'].includes(task.status) && siteLabel(task) === siteName,
+    )
+
+    if (job) openTaskDetailPage(router, job.task_id)
+    else viewJobs()
+  } catch (caught) {
+    toast.error(errorMessage(caught, 'Could not load the site job'))
+  }
+}
+
 const loginAsAdmin = () => {
   toast.promise(login({ onHint: (hint) => toast.info(hint) }), {
     loading: 'Logging in as admin',
@@ -168,11 +186,7 @@ const menuOptions = computed(() => [
     : []),
   { label: 'Login as admin', icon: 'lucide-log-in', onClick: loginAsAdmin },
   { label: 'Back up now', icon: 'lucide-archive', onClick: backupNow },
-  {
-    label: 'View jobs',
-    icon: 'lucide-list-checks',
-    onClick: () => router.push({ name: 'Tasks', query: { site: site.value?.name } }),
-  },
+  { label: 'View jobs', icon: 'lucide-list-checks', onClick: viewJobs },
 ])
 
 // Provisioning and a pending setup wizard both resolve without us: poll quietly
@@ -243,7 +257,7 @@ onMounted(() => {
     <PageHero icon="lucide-globe">
       <template #title>
         <h1 class="text-lg-medium truncate">
-          {{ site.name }}
+          {{ site.primary_domain }}
         </h1>
 
         <Badge :label="statusLabel" :theme="statusBadgeTheme" class="shrink-0" />
@@ -251,7 +265,12 @@ onMounted(() => {
 
       <template v-if="storageUsed" #subtitle>{{ storageUsed }} used</template>
       <template #actions>
-        <Button variant="ghost" class="hidden sm:flex" @click="goToAnalytics">
+        <Button v-if="status === 'provisioning'" variant="ghost" @click="viewCreateJob">
+          <template #prefix><span class="size-4 lucide-list-checks" /></template>
+          View job
+        </Button>
+
+        <Button v-else variant="ghost" class="hidden sm:flex" @click="goToAnalytics">
           <template #prefix><span class="size-4 lucide-chart-line" /></template>
           View analytics
         </Button>

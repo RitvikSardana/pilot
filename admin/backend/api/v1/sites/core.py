@@ -31,7 +31,7 @@ from admin.backend.middleware import rate_limit, require_scope
 from admin.backend.providers.apps import AppProvider
 from admin.backend.providers.sites import SiteInfo, SiteProvider
 from pilot.core.bench import Bench
-from pilot.core.site.login import site_url
+from pilot.core.site.login import primary_host, site_url
 from pilot.internal.site_paths import site_exists
 from pilot.internal.validators import validate_site_name
 from pilot.tasks.build import BuildTask
@@ -338,4 +338,5 @@ def _site_resource(site: SiteInfo) -> dict:
         "broken": site.broken,
         "provisioning": site.provisioning,
         "setup_complete": site.setup_complete,
+        "primary_domain": primary_host(site.name, site.site_config),
     }

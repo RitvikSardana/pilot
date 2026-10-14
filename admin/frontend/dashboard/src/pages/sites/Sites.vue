@@ -83,7 +83,9 @@ const isFiltered = computed(() => Boolean(search.value.trim()) || statusFilter.v
 const filteredSites = computed(() => {
   const query = search.value.toLowerCase().trim()
   return sites.value.filter((site) => {
-    const matchesSearch = !query || site.name.toLowerCase().includes(query)
+    const matchesSearch =
+      !query ||
+      [site.name, site.primary_domain].some((label) => label.toLowerCase().includes(query))
     const matchesStatus = statusFilter.value === 'all' || siteStatus(site) === statusFilter.value
     return matchesSearch && matchesStatus
   })
@@ -220,7 +222,7 @@ onMounted(() => {
 
           <div class="flex flex-1 flex-wrap items-center gap-x-1.5 min-w-0">
             <span class="flex-1 max-w-fit font-medium truncate">
-              {{ site.name }}
+              {{ site.primary_domain }}
             </span>
 
             <span
@@ -255,7 +257,7 @@ onMounted(() => {
             :to="{ name: 'SiteDetail', params: { name: row.site.name } }"
             class="font-medium"
           >
-            {{ row.site.name }}
+            {{ row.site.primary_domain }}
           </router-link>
         </template>
 

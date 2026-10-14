@@ -30,7 +30,7 @@ interface DomainRow extends SiteDomain {
 
 const props = defineProps<Props>()
 
-const { nginxEnabled } = useSite(props.siteName)
+const { nginxEnabled, reload } = useSite(props.siteName)
 
 const domains = ref<SiteDomain[]>([])
 const primaryDomain = ref('')
@@ -87,7 +87,7 @@ const setPrimary = async (domain: string) => {
       error.value = apiErrorMessage(data, 'Failed to set primary domain.')
       return
     }
-    await loadDomains()
+    await Promise.all([loadDomains(), reload()])
   } catch (e) {
     error.value = errorMessage(e, 'Failed to set primary domain.')
   }
