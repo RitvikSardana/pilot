@@ -87,6 +87,7 @@ class AppRollout:
     ) -> None:
         """One line per updated app in `logs/app_updates.json.log`, which fluent-bit ships to Datum."""
         from pilot.core.server import Server
+        from pilot.exceptions import BenchError
 
         try:
             rollout_number = Server().get_rollout_number()
@@ -103,7 +104,7 @@ class AppRollout:
                         "rollout_number": rollout_number,
                     }
                     log_file.write(json.dumps(line) + "\n")
-        except OSError as log_error:
+        except (OSError, BenchError) as log_error:
             print(f"Could not write the app update log: {log_error}", flush=True)
 
     @staticmethod

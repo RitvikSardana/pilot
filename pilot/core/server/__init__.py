@@ -38,6 +38,7 @@ class Server:
 
     def get_rollout_number(self) -> int:
         """This host's place, from 1 to 100, in every app update rollout. Chosen on first use."""
+        from pilot.exceptions import BenchError
         from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text_locked
         from pilot.utils import cli_root
 
@@ -46,14 +47,18 @@ class Server:
         with exclusive_file_lock(path):
             try:
                 number = int(path.read_text())
-            except (FileNotFoundError, ValueError):
+            except FileNotFoundError:
+                number = random.randint(1, 100)
+                replace_private_text_locked(path, str(number))
+                return number
+            except ValueError:
                 number = 0
 
             if not 1 <= number <= 100:
-                if path.exists():
-                    print(f"Replacing the damaged rollout number in {path}.", flush=True)
-                number = random.randint(1, 100)
-                replace_private_text_locked(path, str(number))
+                raise BenchError(
+                    f"The rollout number in {path} is damaged. Set it to a number from 1 to 100, "
+                    "or delete the file so Pilot picks a new one."
+                )
 
             return number
 

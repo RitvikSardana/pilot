@@ -10,6 +10,7 @@ from pilot.core.app import RevisionPin
 from pilot.core.app.repository import AppRepository
 from pilot.core.bench.rollout import AppRollout
 from pilot.core.server import Server
+from pilot.exceptions import BenchError
 from pilot.integrations.central import CentralClientError
 
 STEPS = {"start_percent": 5, "step_percent": 5, "interval_hours": 8, "max_percent": 100}
@@ -164,18 +165,25 @@ def test_the_rollout_number_is_chosen_once(cli_root: Path) -> None:
 
 
 @pytest.mark.parametrize("content", ["not a number", "0", "101", "-5"])
-def test_a_damaged_rollout_number_is_replaced(
-    cli_root: Path, content: str, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_a_damaged_rollout_number_fails_loudly_and_is_kept(cli_root: Path, content: str) -> None:
     path = cli_root / "system" / "rollout-number"
     path.parent.mkdir()
     path.write_text(content)
 
-    number = Server().get_rollout_number()
+    with pytest.raises(BenchError, match="is damaged"):
+        Server().get_rollout_number()
 
-    assert 1 <= number <= 100
-    assert path.read_text() == str(number)
-    assert "damaged rollout number" in capsys.readouterr().out
+    assert path.read_text() == content
+
+
+def test_a_damaged_rollout_number_does_not_fail_the_update_log(
+    tmp_path: Path, cli_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _set_rollout_number(cli_root, 500)
+
+    AppRollout(MagicMock(logs_path=tmp_path)).log_updates([], "success")
+
+    assert "Could not write the app update log" in capsys.readouterr().out
 
 
 def _repository(release: dict | None, is_offered: bool) -> AppRepository:
