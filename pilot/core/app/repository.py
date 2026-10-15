@@ -50,25 +50,18 @@ class AppRepository:
         return pin is not None and not self.is_on_revision(pin)
 
     def update_target(self) -> RevisionPin | None:
-        """The newest target once the app update rollout reaches this server, else None."""
-        pin = self.get_newest_target()
-        if pin is None:
-            # A failed lookup also gives None, so it must not reset the rollout clock.
-            return None
-
-        rollout = self.app.bench.app_rollout
-        if self.is_on_revision(pin):
-            rollout.forget(self.app.config.name)
-            return pin
-
-        return pin if rollout.is_offered(self.app.config.name, pin.ref, self.app.is_marketplace) else None
-
-    def get_newest_target(self) -> RevisionPin | None:
-        """The fixed revision this app would update to, or None when there is none. (forward only)"""
+        """The fixed revision this app would update to, or None when there is none. (forward only)
+        A marketplace release waits until the app update rollout reaches this server."""
         entry = self.marketplace_entry
         if entry:
             release = self.forward_release(entry)
-            return RevisionPin.from_marketplace_release(release) if release else None
+            if not release:
+                return None
+
+            if not self.app.bench.app_rollout.is_offered(entry["name"], release["commit"]):
+                return None
+
+            return RevisionPin.from_marketplace_release(release)
         if not self.app.config.branch:
             return None
         tip = self.repo.remote_branch_sha(self.app.config.branch)

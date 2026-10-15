@@ -5,8 +5,6 @@ from datetime import UTC, datetime
 from functools import cached_property
 from typing import TYPE_CHECKING, Literal
 
-from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text_locked
-
 if TYPE_CHECKING:
     from pilot.core.bench import Bench
     from pilot.core.bench.migration.operation import AppRevision
@@ -16,12 +14,12 @@ _LOG_MESSAGE_LIMIT = 2000
 
 
 class AppRollout:
-    """Offers each pending app update to a share of servers that grows over time. Central
-    owns the steps. `app-rollout.json` holds when this bench first saw each update."""
+    """Offers each marketplace release to a share of servers that grows over time. Central
+    owns the steps. The clock starts when the release was added to the registry, so every
+    server reads the same time."""
 
     def __init__(self, bench: "Bench") -> None:
         self.bench = bench
-        self.path = bench.path / "app-rollout.json"
 
     @cached_property
     def settings(self) -> dict | None | Literal[False]:
@@ -53,9 +51,11 @@ class AppRollout:
 
         return settings
 
-    def is_offered(self, app_name: str, target: str, restart_on_new_target: bool) -> bool:
-        """Whether the update has reached this server's rollout number."""
+    def is_offered(self, app_name: str, commit: str) -> bool:
+        """Whether the release has reached this server's rollout number."""
+        from pilot.core.registry_cache import RegistryCache
         from pilot.core.server import Server
+        from pilot.utils import cli_root
 
         if self.settings is None:
             return True
@@ -63,48 +63,22 @@ class AppRollout:
         if self.settings is False:
             return False
 
-        first_seen = self.get_first_seen(app_name, target, restart_on_new_target)
-        return Server().get_rollout_number() <= self.get_percent(first_seen)
+        added_at = RegistryCache(cli_root()).get_added_at(app_name, commit)
+        if added_at is None:
+            print(f"The {app_name} update waits: the registry does not say when it was added", flush=True)
+            return False
 
-    def get_first_seen(self, app_name: str, target: str, restart_on_new_target: bool) -> datetime:
-        """When this bench first saw the app's pending update. A branch app keeps its first
-        time when new commits arrive, or a busy branch would never reach every server."""
-        with exclusive_file_lock(self.path):
-            clocks = self._read()
-            clock = clocks.get(app_name) or {}
-            try:
-                first_seen = datetime.fromisoformat(clock["first_seen"]).astimezone(UTC)
-                keeps_clock = not restart_on_new_target or clock.get("target") == target
-            except (TypeError, KeyError, ValueError):
-                # A missing or damaged clock starts again, which only delays the update.
-                keeps_clock = False
+        return Server().get_rollout_number() <= self.get_percent(added_at)
 
-            if not keeps_clock:
-                first_seen = datetime.now(UTC)
-                clocks[app_name] = {"first_seen": first_seen.isoformat(), "target": target}
-                replace_private_text_locked(self.path, json.dumps(clocks, indent=2))
-
-        return first_seen
-
-    def get_percent(self, first_seen: datetime) -> int:
-        """The start percent plus one step for each full interval since `first_seen`."""
+    def get_percent(self, added_at: datetime) -> int:
+        """The start percent plus one step for each full interval since the release was added."""
         settings = self.settings
         assert settings, "Only called when Central sent rollout steps."
 
-        hours = (datetime.now(UTC) - first_seen).total_seconds() / 3600
+        hours = (datetime.now(UTC) - added_at).total_seconds() / 3600
         # A clock set back in time must not drop below the start percent.
         steps = max(0, int(hours // settings["interval_hours"]))
         return min(100, settings["start_percent"] + steps * settings["step_percent"])
-
-    def forget(self, app_name: str) -> None:
-        """Remove the app's clock when it is up to date, so its next update starts at the start percent."""
-        if not self.path.exists():
-            return
-
-        with exclusive_file_lock(self.path):
-            clocks = self._read()
-            if clocks.pop(app_name, None) is not None:
-                replace_private_text_locked(self.path, json.dumps(clocks, indent=2))
 
     def log_updates(
         self, revisions: list["AppRevision"], status: Literal["success", "failed"], error: str = ""
@@ -129,15 +103,6 @@ class AppRollout:
                     log_file.write(json.dumps(line) + "\n")
         except OSError as log_error:
             print(f"Could not write the app update log: {log_error}", flush=True)
-
-    def _read(self) -> dict:
-        """A missing or damaged file starts every clock again, which only delays updates."""
-        try:
-            clocks = json.loads(self.path.read_text())
-        except (FileNotFoundError, ValueError):
-            return {}
-
-        return clocks if isinstance(clocks, dict) else {}
 
     @staticmethod
     def _has_valid_steps(settings: object) -> bool:

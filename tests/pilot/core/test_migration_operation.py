@@ -543,13 +543,9 @@ def test_a_completed_update_logs_one_success_line_per_app(tmp_path: Path) -> Non
         sites=[],
     )
     operation.state = get_state("updating")
-    mock_bench.app_rollout.path.write_text(
-        json.dumps({"frappe": {"first_seen": "2026-01-01T00:00:00+00:00"}})
-    )
 
     operation.update_apps()
 
-    assert json.loads(mock_bench.app_rollout.path.read_text()) == {}
     [line] = _update_log(tmp_path)
     assert line["time"]
     assert line["status"] == "success"

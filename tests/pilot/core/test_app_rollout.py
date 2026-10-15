@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -40,11 +39,9 @@ def _set_rollout_number(cli_root: Path, number: int) -> None:
     (cli_root / "system" / "rollout-number").write_text(str(number))
 
 
-def _move_first_seen_back(rollout: AppRollout, app_name: str, hours: int) -> None:
-    clocks = json.loads(rollout.path.read_text())
-    first_seen = datetime.fromisoformat(clocks[app_name]["first_seen"]) - timedelta(hours=hours)
-    clocks[app_name]["first_seen"] = first_seen.isoformat()
-    rollout.path.write_text(json.dumps(clocks))
+def _added_hours_ago(hours: int):
+    added_at = datetime.now(UTC) - timedelta(hours=hours)
+    return patch("pilot.core.registry_cache.RegistryCache.get_added_at", return_value=added_at)
 
 
 def test_percent_grows_one_step_per_full_interval_up_to_100(tmp_path: Path) -> None:
@@ -93,8 +90,7 @@ def test_every_update_is_offered_without_rollout_steps(tmp_path: Path, cli_root:
     rollout = AppRollout(MagicMock(path=tmp_path))
     rollout.settings = None
 
-    assert rollout.is_offered("frappe", "abc", restart_on_new_target=True) is True
-    assert not rollout.path.exists()
+    assert rollout.is_offered("frappe", "abc") is True
 
 
 def test_a_bench_without_central_asks_central_nothing(tmp_path: Path) -> None:
@@ -110,7 +106,7 @@ def test_updates_wait_while_central_is_unreachable(tmp_path: Path, cli_root: Pat
     with patch(
         "pilot.integrations.central.client.CentralClient.config", side_effect=CentralClientError("down")
     ):
-        assert AppRollout(bench).is_offered("frappe", "abc", restart_on_new_target=True) is False
+        assert AppRollout(bench).is_offered("frappe", "abc") is False
 
 
 def test_an_update_reaches_a_server_once_the_percent_passes_its_number(
@@ -119,58 +115,19 @@ def test_an_update_reaches_a_server_once_the_percent_passes_its_number(
     _set_rollout_number(cli_root, 37)
     rollout = _rollout(tmp_path)
 
-    assert rollout.is_offered("frappe", "abc", restart_on_new_target=True) is False
+    with _added_hours_ago(0):
+        assert rollout.is_offered("frappe", "abc") is False
 
-    _move_first_seen_back(rollout, "frappe", hours=7 * 8)
+    with _added_hours_ago(7 * 8):
+        assert rollout.is_offered("frappe", "abc") is True
 
-    assert rollout.is_offered("frappe", "abc", restart_on_new_target=True) is True
 
-
-def test_a_new_marketplace_release_starts_again_but_a_new_branch_commit_does_not(
-    tmp_path: Path, cli_root: Path
-) -> None:
-    _set_rollout_number(cli_root, 37)
+def test_an_update_waits_when_the_registry_has_no_time_for_it(tmp_path: Path, cli_root: Path) -> None:
+    _set_rollout_number(cli_root, 1)
     rollout = _rollout(tmp_path)
-    rollout.is_offered("frappe", "release-1", restart_on_new_target=True)
-    rollout.is_offered("myapp", "commit-1", restart_on_new_target=False)
-    _move_first_seen_back(rollout, "frappe", hours=100)
-    _move_first_seen_back(rollout, "myapp", hours=100)
 
-    assert rollout.is_offered("frappe", "release-2", restart_on_new_target=True) is False
-    assert rollout.is_offered("myapp", "commit-2", restart_on_new_target=False) is True
-
-
-def test_forget_removes_only_that_apps_clock(tmp_path: Path) -> None:
-    rollout = _rollout(tmp_path)
-    rollout.get_first_seen("frappe", "abc", restart_on_new_target=True)
-    rollout.get_first_seen("erpnext", "def", restart_on_new_target=True)
-
-    rollout.forget("frappe")
-
-    assert set(json.loads(rollout.path.read_text())) == {"erpnext"}
-
-
-def test_a_damaged_clock_file_starts_the_clock_again(tmp_path: Path) -> None:
-    rollout = _rollout(tmp_path)
-    rollout.path.write_text("{not json")
-
-    first_seen = rollout.get_first_seen("frappe", "abc", restart_on_new_target=True)
-
-    assert datetime.now(UTC) - first_seen < timedelta(minutes=1)
-
-
-@pytest.mark.parametrize(
-    "clock",
-    [{"target": "abc"}, {"first_seen": "yesterday", "target": "abc"}, {"first_seen": 5}, "abc"],
-)
-def test_a_damaged_clock_entry_starts_again(tmp_path: Path, clock: object) -> None:
-    rollout = _rollout(tmp_path)
-    rollout.path.write_text(json.dumps({"frappe": clock}))
-
-    first_seen = rollout.get_first_seen("frappe", "abc", restart_on_new_target=False)
-
-    assert datetime.now(UTC) - first_seen < timedelta(minutes=1)
-    assert json.loads(rollout.path.read_text())["frappe"]["first_seen"] == first_seen.isoformat()
+    with patch("pilot.core.registry_cache.RegistryCache.get_added_at", return_value=None):
+        assert rollout.is_offered("frappe", "abc") is False
 
 
 def test_the_rollout_number_is_chosen_once(cli_root: Path) -> None:
@@ -195,34 +152,44 @@ def test_a_damaged_rollout_number_is_replaced(
     assert "damaged rollout number" in capsys.readouterr().out
 
 
-def _repository(newest: RevisionPin | None, on_revision: bool, is_offered: bool) -> AppRepository:
+def _repository(release: dict | None, is_offered: bool) -> AppRepository:
     app = MagicMock()
-    app.config.name = "frappe"
-    app.is_marketplace = False
+    app.config.branch = "main"
     app.bench.app_rollout.is_offered.return_value = is_offered
     repository = AppRepository(app)
-    repository.get_newest_target = MagicMock(return_value=newest)
-    repository.is_on_revision = MagicMock(return_value=on_revision)
+    repository.forward_release = MagicMock(return_value=release)
     return repository
 
 
-def test_update_target_holds_back_an_update_the_rollout_has_not_offered() -> None:
-    repository = _repository(RevisionPin(kind="commit", ref="abc"), on_revision=False, is_offered=False)
-
-    assert repository.update_target() is None
-    repository.app.bench.app_rollout.is_offered.assert_called_once_with("frappe", "abc", False)
+ENTRY = {"name": "frappe"}
+RELEASE = {"version": "16.1.0", "branch": "main", "commit": "abc"}
 
 
-def test_update_target_keeps_the_clock_when_the_lookup_finds_nothing() -> None:
-    repository = _repository(None, on_revision=False, is_offered=True)
+def test_update_target_holds_back_a_release_the_rollout_has_not_offered() -> None:
+    repository = _repository(RELEASE, is_offered=False)
 
-    assert repository.update_target() is None
-    repository.app.bench.app_rollout.forget.assert_not_called()
+    with patch.object(AppRepository, "marketplace_entry", ENTRY):
+        assert repository.update_target() is None
+
+    repository.app.bench.app_rollout.is_offered.assert_called_once_with("frappe", "abc")
 
 
-def test_update_target_forgets_the_clock_of_an_app_that_is_up_to_date() -> None:
-    pin = RevisionPin(kind="commit", ref="abc")
-    repository = _repository(pin, on_revision=True, is_offered=False)
+def test_update_target_gives_a_release_the_rollout_has_offered() -> None:
+    repository = _repository(RELEASE, is_offered=True)
 
-    assert repository.update_target() is pin
-    repository.app.bench.app_rollout.forget.assert_called_once_with("frappe")
+    with patch.object(AppRepository, "marketplace_entry", ENTRY):
+        assert repository.update_target() == RevisionPin(kind="commit", ref="abc")
+
+
+def test_update_target_gives_a_branch_app_its_new_commit_at_once() -> None:
+    repository = _repository(None, is_offered=False)
+    branch_repo = MagicMock()
+    branch_repo.remote_branch_sha.return_value = "tip"
+
+    with (
+        patch.object(AppRepository, "marketplace_entry", None),
+        patch.object(AppRepository, "repo", branch_repo),
+    ):
+        assert repository.update_target() == RevisionPin(kind="commit", ref="tip")
+
+    repository.app.bench.app_rollout.is_offered.assert_not_called()
