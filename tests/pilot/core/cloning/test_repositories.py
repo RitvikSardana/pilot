@@ -6,7 +6,7 @@ from threading import Barrier
 import pytest
 
 from admin.backend.internal.session import Session
-from pilot.config import AppConfig
+from pilot.config import AppConfig, BenchConfig
 from pilot.core.bench.cloning.bench import BenchClone
 from pilot.core.site.clone import SiteClone
 from pilot.exceptions import BenchError, CommandError
@@ -273,6 +273,28 @@ def test_default_clone_uses_live_origin_default_and_excludes_feature_changes(sou
     assert git(app, "branch", "--show-current") == "feature"
     assert builds == [destination.path]
     assert destination.config.apps[0].branch == default_branch
+
+
+def test_clone_preserves_settings_saved_while_copying_repositories(source, monkeypatch):
+    app = source.apps_path / "frappe"
+    git(app, "branch", "task")
+    git(app, "push", "origin", "task")
+    copy_app = BenchClone.copy_selected_app
+
+    def copy_and_change_settings(self, app, destination):
+        selected = copy_app(self, app, destination)
+        with BenchConfig.open(destination.path) as config:
+            config.watch_admin_js = True
+        return selected
+
+    monkeypatch.setattr(BenchClone, "copy_selected_app", copy_and_change_settings)
+    destination = source.clone("concurrent-settings", lambda message: None, branch="task")
+
+    saved = BenchConfig.read(destination.path)
+    assert saved.watch_admin_js
+    assert saved.apps[0].branch == "task"
+    assert destination.config.watch_admin_js
+    assert destination.config.apps[0].branch == "task"
 
 
 def test_per_app_branch_override_is_fetched_and_checked_out_cleanly(source):

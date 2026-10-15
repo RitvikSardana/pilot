@@ -133,12 +133,11 @@ class BenchClone:
         apps = self.source.apps()
         with ThreadPoolExecutor(max_workers=4) as executor:
             branches = list(executor.map(self.copy_selected_app, apps, [destination] * len(apps)))
-        for app, selected in zip(apps, branches, strict=True):
-            if selected is not None:
-                next(
-                    item for item in destination.config.apps if item.name == app.config.name
-                ).branch = selected
-        destination.config.write(destination.path)
+        with BenchConfig.open(destination.path) as config:
+            for app, selected in zip(apps, branches, strict=True):
+                if selected is not None:
+                    next(item for item in config.apps if item.name == app.config.name).branch = selected
+        destination.config = config
 
     def copy_selected_app(self, app, destination) -> str | None:
         selected = self.app_branches.get(app.config.name, self.branch)
