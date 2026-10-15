@@ -47,11 +47,9 @@ class AppRollout:
         if settings is None:
             return None
 
-        for key in ("start_percent", "step_percent", "interval_hours"):
-            value = settings.get(key) if isinstance(settings, dict) else None
-            if not isinstance(value, int) or value < 1:
-                print(f"App updates wait for Central: bad app rollout steps {settings!r}", flush=True)
-                return False
+        if not self._has_valid_steps(settings):
+            print(f"App updates wait for Central: bad app rollout steps {settings!r}", flush=True)
+            return False
 
         return settings
 
@@ -140,3 +138,16 @@ class AppRollout:
             return {}
 
         return clocks if isinstance(clocks, dict) else {}
+
+    @staticmethod
+    def _has_valid_steps(settings: object) -> bool:
+        """Every step is a whole number of at least 1, and the percents are at most 100."""
+        if not isinstance(settings, dict):
+            return False
+
+        values = [settings.get(key) for key in ("start_percent", "step_percent", "interval_hours")]
+        # JSON true passes isinstance(value, int), so check the exact type.
+        if not all(type(value) is int and value >= 1 for value in values):
+            return False
+
+        return settings["start_percent"] <= 100 and settings["step_percent"] <= 100

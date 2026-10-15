@@ -72,6 +72,9 @@ def test_a_central_without_rollout_steps_means_no_rollout(tmp_path: Path, reply:
     [
         {**STEPS, "step_percent": 0},
         {**STEPS, "interval_hours": "8"},
+        {**STEPS, "interval_hours": True},
+        {**STEPS, "start_percent": 101},
+        {**STEPS, "step_percent": 101},
         {"start_percent": 5},
         "5,5,8",
     ],
