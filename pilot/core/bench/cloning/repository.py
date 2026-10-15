@@ -1,15 +1,15 @@
 import os
-import sys
 import tempfile
 from pathlib import Path
 
+from pilot.core.bench.artifacts import BenchArtifacts
 from pilot.exceptions import CommandError
 from pilot.internal.git import git_env
 from pilot.utils import run_command
 
 
 def clone_repository(source: Path, destination: Path) -> None:
-    if not destination.exists() and try_reflink_clone(source, destination):
+    if not destination.exists() and try_copy_clone(source, destination):
         return
     run_command(
         ["git", "clone", "--no-hardlinks", "--dissociate", "--no-checkout", str(source), str(destination)],
@@ -17,9 +17,7 @@ def clone_repository(source: Path, destination: Path) -> None:
     )
 
 
-def try_reflink_clone(source: Path, destination: Path) -> bool:
-    if sys.platform not in {"linux", "darwin"}:
-        return False
+def try_copy_clone(source: Path, destination: Path) -> bool:
     objects = Path(
         run_command(
             ["git", "-C", str(source), "rev-parse", "--path-format=absolute", "--git-path", "objects"],
@@ -28,36 +26,52 @@ def try_reflink_clone(source: Path, destination: Path) -> bool:
         .stdout.decode()
         .strip()
     )
-    if not has_portable_objects(source, objects):
+    if not has_portable_objects(objects):
         return False
+    shallow_path = Path(
+        run_command(
+            ["git", "-C", str(source), "rev-parse", "--path-format=absolute", "--git-path", "shallow"],
+            env=git_env(),
+        )
+        .stdout.decode()
+        .strip()
+    )
+    shallow = read_shallow_boundary(shallow_path)
     with tempfile.TemporaryDirectory(prefix=".pilot-git-", dir=destination.parent) as temporary:
         staging = Path(temporary)
         target = staging / ".git" / "objects"
         target.mkdir(parents=True)
-        flag = "--reflink=always" if sys.platform == "linux" else "-c"
         try:
-            run_command(["cp", "-a", flag, str(objects) + "/.", str(target)])
+            BenchArtifacts.copy_directory(objects, target)
+            if not has_portable_objects(target):
+                return False
+            if shallow:
+                (staging / ".git" / "shallow").write_bytes(shallow)
             initialize_repository(source, staging)
             # Source maintenance can remove objects while its refs are read.
             run_command(
                 ["git", "-C", str(staging), "fsck", "--connectivity-only", "--no-dangling"],
                 env=git_env(),
             )
+            if shallow != read_shallow_boundary(shallow_path):
+                return False
         except CommandError:
             return False
         staging.rename(destination)
     return True
 
 
-def has_portable_objects(source: Path, objects: Path) -> bool:
+def read_shallow_boundary(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
+def has_portable_objects(objects: Path) -> bool:
     if os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         return False
     if objects.is_symlink() or (objects / "info" / "alternates").exists():
-        return False
-    shallow = run_command(
-        ["git", "-C", str(source), "rev-parse", "--is-shallow-repository"], env=git_env()
-    ).stdout.strip()
-    if shallow != b"false":
         return False
     return has_independent_object_files(objects)
 

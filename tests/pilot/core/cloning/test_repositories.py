@@ -38,7 +38,7 @@ def test_current_copy_dissociates_borrowed_history_and_preserves_index(source):
 
 
 @pytest.mark.parametrize("checkout", ["branch", "detached", "worktree"])
-def test_reflink_repository_is_independent_with_fresh_metadata(source, monkeypatch, checkout):
+def test_copied_repository_is_independent_with_fresh_metadata(source, monkeypatch, checkout):
     import shutil
 
     from pilot.core.bench.cloning import repository as clone_repository
@@ -60,12 +60,16 @@ def test_reflink_repository_is_independent_with_fresh_metadata(source, monkeypat
 
     def copy(argv, **kwargs):
         commands.append(argv)
-        if argv[0] == "cp":
-            copies.append(argv)
-            argv = ["--reflink=auto" if part == "--reflink=always" else part for part in argv]
         return run(argv, **kwargs)
 
     monkeypatch.setattr(clone_repository, "run_command", copy)
+    original_copy = clone_repository.BenchArtifacts.copy_directory
+
+    def copy_objects(source, destination):
+        copies.append(source)
+        original_copy(source, destination)
+
+    monkeypatch.setattr(clone_repository.BenchArtifacts, "copy_directory", copy_objects)
     destination = source.path.parent / "independent"
     clone_repository.clone_repository(app, destination)
     assert copies
@@ -82,6 +86,59 @@ def test_reflink_repository_is_independent_with_fresh_metadata(source, monkeypat
     copied = destination / ".git/objects/pack" / pack.name
     assert (pack.stat().st_dev, pack.stat().st_ino) != (copied.stat().st_dev, copied.stat().st_ino)
     shutil.rmtree(original)
+    git(destination, "fsck", "--full")
+    git(destination, "checkout", "--force", "HEAD")
+    assert (destination / "frappe/__init__.py").read_text() == "VALUE = 'baseline'\n"
+
+
+@pytest.mark.parametrize("worktree", [False, True])
+def test_shallow_repository_copy_preserves_boundary_and_independent_history(source, monkeypatch, worktree):
+    import shutil
+
+    from pilot.core.bench.cloning import repository as clone_repository
+
+    original = source.apps_path / "frappe"
+    git(
+        original,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "second",
+    )
+    shallow = source.path.parent / "shallow"
+    subprocess.run(
+        ["git", "clone", "--depth=1", original.as_uri(), str(shallow)],
+        check=True,
+        capture_output=True,
+    )
+    app = shallow
+    if worktree:
+        app = source.path.parent / "linked-shallow"
+        git(shallow, "worktree", "add", "-b", "task", str(app))
+    revision = git(app, "rev-parse", "HEAD")
+    run = clone_repository.run_command
+
+    def prohibit_clone(argv, **kwargs):
+        assert argv[:2] != ["git", "clone"]
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(clone_repository, "run_command", prohibit_clone)
+    destination = source.path.parent / "independent"
+    clone_repository.clone_repository(app, destination)
+    shutil.rmtree(original)
+    shutil.rmtree(shallow)
+    assert git(destination, "rev-parse", "HEAD") == revision
+    assert git(destination, "rev-parse", "--is-shallow-repository") == "true"
+    assert (
+        subprocess.run(
+            ["git", "-C", str(destination), "cat-file", "-e", "HEAD^"], capture_output=True
+        ).returncode
+        != 0
+    )
     git(destination, "fsck", "--full")
     git(destination, "checkout", "--force", "HEAD")
     assert (destination / "frappe/__init__.py").read_text() == "VALUE = 'baseline'\n"
@@ -108,20 +165,41 @@ def test_alternate_backed_repository_clone_dissociates(source):
     git(destination, "fsck", "--full")
 
 
-def test_failed_reflink_copy_discards_partial_objects_before_clone(source, monkeypatch):
-    from pathlib import Path
-
+def test_changed_shallow_boundary_discards_copy_before_clone(source, monkeypatch):
     from pilot.core.bench.cloning import repository as clone_repository
 
+    app = source.apps_path / "frappe"
+    initialize = clone_repository.initialize_repository
     run = clone_repository.run_command
+    clones = []
 
-    def copy(argv, **kwargs):
-        if argv[0] == "cp":
-            (Path(argv[-1]) / "partial").write_text("incomplete object")
-            raise CommandError("Reflink unavailable")
+    def change_boundary(original, destination):
+        initialize(original, destination)
+        (app / ".git/shallow").write_text(git(app, "rev-parse", "HEAD") + "\n")
+
+    def record_clone(argv, **kwargs):
+        if argv[:2] == ["git", "clone"]:
+            clones.append(argv)
         return run(argv, **kwargs)
 
-    monkeypatch.setattr(clone_repository, "run_command", copy)
+    monkeypatch.setattr(clone_repository, "initialize_repository", change_boundary)
+    monkeypatch.setattr(clone_repository, "run_command", record_clone)
+    destination = source.path.parent / "fallback"
+    clone_repository.clone_repository(app, destination)
+    assert clones
+    assert git(destination, "rev-parse", "--is-shallow-repository") == "true"
+    git(destination, "fsck", "--full")
+    assert not list(destination.parent.glob(".pilot-git-*"))
+
+
+def test_failed_object_copy_discards_partial_objects_before_clone(source, monkeypatch):
+    from pilot.core.bench.cloning import repository as clone_repository
+
+    def copy(source, destination):
+        (destination / "partial").write_text("incomplete object")
+        raise CommandError("Copy failed")
+
+    monkeypatch.setattr(clone_repository.BenchArtifacts, "copy_directory", copy)
     destination = source.path.parent / "fallback"
     clone_repository.clone_repository(source.apps_path / "frappe", destination)
     git(destination, "fsck", "--full")
