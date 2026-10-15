@@ -23,7 +23,7 @@ class AppRollout:
 
     @cached_property
     def settings(self) -> dict | None | Literal[False]:
-        """Central's `start_percent`, `step_percent` and `interval_hours`. None when there is
+        """Central's `start_percent`, `step_percent`, `interval_hours` and `max_percent`. None when there is
         no rollout and every update is offered at once. False when Central cannot answer or
         sends bad steps, so new updates wait for it."""
         from pilot.integrations.central.client import CentralClient, CentralClientError
@@ -71,14 +71,16 @@ class AppRollout:
         return Server().get_rollout_number() <= self.get_percent(added_at)
 
     def get_percent(self, added_at: datetime) -> int:
-        """The start percent plus one step for each full interval since the release was added."""
+        """The start percent plus one step for each full interval since the release was added,
+        up to the max percent. A max percent of 0 stops the rollout."""
         settings = self.settings
         assert settings, "Only called when Central sent rollout steps."
 
         hours = (datetime.now(UTC) - added_at).total_seconds() / 3600
         # A clock set back in time must not drop below the start percent.
         steps = max(0, int(hours // settings["interval_hours"]))
-        return min(100, settings["start_percent"] + steps * settings["step_percent"])
+        percent = settings["start_percent"] + steps * settings["step_percent"]
+        return min(percent, settings["max_percent"])
 
     def log_updates(
         self, revisions: list["AppRevision"], status: Literal["success", "failed"], error: str = ""
@@ -106,13 +108,21 @@ class AppRollout:
 
     @staticmethod
     def _has_valid_steps(settings: object) -> bool:
-        """Every step is a whole number of at least 1, and the percents are at most 100."""
+        """Every step is a whole number. The percents are 1 to 100, and the max percent is 0 to 100."""
         if not isinstance(settings, dict):
             return False
 
-        values = [settings.get(key) for key in ("start_percent", "step_percent", "interval_hours")]
-        # JSON true passes isinstance(value, int), so check the exact type.
-        if not all(type(value) is int and value >= 1 for value in values):
+        for key in ("start_percent", "step_percent", "interval_hours", "max_percent"):
+            value = settings.get(key)
+            # JSON true and false arrive as bool, and Python also counts a bool as an int.
+            if isinstance(value, bool) or not isinstance(value, int):
+                return False
+
+        if settings["interval_hours"] < 1:
             return False
 
-        return settings["start_percent"] <= 100 and settings["step_percent"] <= 100
+        for key in ("start_percent", "step_percent"):
+            if not 1 <= settings[key] <= 100:
+                return False
+
+        return 0 <= settings["max_percent"] <= 100

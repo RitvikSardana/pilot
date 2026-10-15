@@ -12,7 +12,7 @@ from pilot.core.bench.rollout import AppRollout
 from pilot.core.server import Server
 from pilot.integrations.central import CentralClientError
 
-STEPS = {"start_percent": 5, "step_percent": 5, "interval_hours": 8}
+STEPS = {"start_percent": 5, "step_percent": 5, "interval_hours": 8, "max_percent": 100}
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +55,28 @@ def test_percent_grows_one_step_per_full_interval_up_to_100(tmp_path: Path) -> N
     assert rollout.get_percent(now + timedelta(hours=20)) == 5
 
 
+def test_the_max_percent_caps_the_rollout(tmp_path: Path) -> None:
+    rollout = _rollout(tmp_path)
+    rollout.settings = {**STEPS, "max_percent": 30}
+
+    assert rollout.get_percent(datetime.now(UTC) - timedelta(hours=1000)) == 30
+
+
+def test_a_max_percent_of_0_offers_the_update_to_no_server(tmp_path: Path, cli_root: Path) -> None:
+    _set_rollout_number(cli_root, 1)
+    rollout = _rollout(tmp_path)
+    rollout.settings = {**STEPS, "max_percent": 0}
+
+    with _added_hours_ago(1000):
+        assert rollout.is_offered("frappe", "abc") is False
+
+
+def test_a_max_percent_of_0_is_valid(tmp_path: Path) -> None:
+    steps = {**STEPS, "max_percent": 0}
+
+    assert _settings_from_central(tmp_path, {"app_rollout": steps}) == steps
+
+
 def test_the_steps_come_from_central(tmp_path: Path) -> None:
     assert _settings_from_central(tmp_path, {"app_rollout": STEPS}) == STEPS
 
@@ -72,6 +94,10 @@ def test_a_central_without_rollout_steps_means_no_rollout(tmp_path: Path, reply:
         {**STEPS, "interval_hours": True},
         {**STEPS, "start_percent": 101},
         {**STEPS, "step_percent": 101},
+        {**STEPS, "max_percent": -1},
+        {**STEPS, "max_percent": 101},
+        {**STEPS, "max_percent": True},
+        {"start_percent": 5, "step_percent": 5, "interval_hours": 8},
         {"start_percent": 5},
         "5,5,8",
     ],
