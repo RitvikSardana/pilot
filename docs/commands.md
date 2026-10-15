@@ -21,18 +21,21 @@ Bench commands with `--bench NAME` can run from outside the bench directory. `Be
 
 ## Runtime Commands
 
-- `pilot start`: start bench processes.
+- `pilot start`: start bench processes. On a development bench, it stays in the foreground and its children receive no standard input, so they cannot consume a launcher's piped script. Use a service manager for unattended development operation.
 - `pilot stop`: stop bench processes.
 - `pilot restart`: restart the production workload.
 - `pilot build`: build assets, or download [prebuilt assets](prebuilt-assets.md) for the checked-out commit when the app publishes them. The queued build task (`pilot.tasks.build.BuildTask`) always forces a full rebuild, since a queued/CLI-triggered build is expected to reflect current source rather than reuse a prebuilt bundle.
-- `pilot frappe -- ...`: pass through to Frappe's bench helper.
+- `pilot -b NAME frappe --site SITE COMMAND`: pass through to Frappe's bench helper without a `--` separator. For example: `pilot -b dev frappe --site test.local migrate`. Use `pilot frappe --help` for this syntax, or append `--help` to a Frappe command for its options.
 
 Some runtime commands support all benches when invoked with the CLI option for all-bench execution.
+
+When a classic development bench has multiple sites, `pilot start` warns if `FRAPPE_SITE` or `default_site` fixes routing to one site. It keeps the setting and starts the bench.
+For public development URLs, see [Development sites behind a proxy](development-proxies.md).
 
 ## App Commands
 
 - `pilot new-app APP`: scaffold a new Frappe app under `apps/` and install it. Prompts for title, description, publisher, email, license, GitHub workflow, and branch; pass any of `--title/--description/--publisher/--email/--license/--branch/--github-workflow` to skip prompts (branch defaults to `develop`).
-- `pilot get-app REPO_OR_NAME`: clone and install an app into the bench.
+- `pilot get-app REPO_OR_NAME`: clone and install an app into the bench. `--skip-assets` skips asset setup for the app and its missing dependencies. `--commit SHA` installs that commit and keeps `--branch` checked out, so Pilot can download the [prebuilt assets](prebuilt-assets.md) of that branch. Example: `pilot get-app https://github.com/frappe/crm --branch main --commit <sha>`.
 - `pilot list-apps`: list apps present in the bench.
 - `pilot install-app SITE APP [APP ...]`: install apps on a site. An app the site only has disabled is enabled instead, bringing back anything it requires first.
 - `pilot uninstall-app SITE APP [APP ...]`: uninstall apps from a site, dropping their data. An app that no site uses afterwards is also removed from the bench.

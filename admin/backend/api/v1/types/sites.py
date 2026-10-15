@@ -11,6 +11,7 @@ class SiteResource(TypedDict):
     broken: bool
     provisioning: bool
     setup_complete: bool
+    primary_domain: str
 
 
 class SiteDetail(SiteResource):

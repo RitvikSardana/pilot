@@ -127,7 +127,7 @@ When you tag a commit after its push, its files stay from then on, if the workfl
 
 | Operation | Prebuilt assets |
 |---|---|
-| Install an app (`pilot get-app`, Admin) | Yes |
+| Install an app (`pilot get-app`, Admin) | Yes. `pilot get-app --skip-assets` skips all asset setup. |
 | Update the bench or an app | Yes |
 | Switch an app's branch | Yes |
 | Create a site when an app has no built assets yet | Yes |
@@ -155,7 +155,7 @@ git clone https://github.com/frappe/pilot
 pilot/scripts/build-app-assets.sh <app checkout> <frappe branch> <output dir>
 ```
 
-It needs git, Python 3.11 or later, Node.js 24, and yarn. It writes the archive and its checksum to the output directory.
+It needs git, Python 3.11 or later, and Node.js 24. It installs JS dependencies with the same rules as Pilot on a server. See [JS dependencies](production.md#js-dependencies). When yarn or pnpm is missing, it installs the tool into `~/.local`. It writes the archive and its checksum to the output directory.
 
 ## Troubleshooting
 

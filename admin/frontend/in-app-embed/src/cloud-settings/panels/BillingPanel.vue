@@ -52,6 +52,15 @@ const error = computed(() => store.state.billingError)
 const loadFailed = computed(() => Boolean(error.value) && !billing.value)
 const plan = computed(() => billing.value?.plan)
 
+const paymentMethodNote = computed(() => {
+  const trial = billing.value?.trial
+  if (trial?.state === 'Ended')
+    return __('Your free trial has ended and this site is stopped. Add a payment method before {0} to keep it.', [trial.deletes_on])
+  if (trial?.state === 'Active')
+    return __('Your free trial ends in {0} days. Add a payment method to keep this site running.', [trial.days_left])
+  return __('Add a payment method to keep this site running.')
+})
+
 const planSubtitle = computed(() => {
   if (plan.value?.subtitle) return plan.value.subtitle
 
@@ -224,11 +233,7 @@ const openChangePlan = async () => {
         </p>
 
         <p class="col-start-1 mt-0.5 text-p-sm text-ink-gray-5">
-          {{ billing.payment_method
-              ? __("Used for your monthly bill.")
-              : __(
-                  "You're on trial credit. Add a payment method to keep this site running after it.",
-                ) }}
+          {{ billing.payment_method ? __("Used for your monthly bill.") : paymentMethodNote }}
         </p>
 
         <Button

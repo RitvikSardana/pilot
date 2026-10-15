@@ -5,10 +5,10 @@ from unittest.mock import patch
 
 import pytest
 
+from pilot.core.app.node_packages import NodePackages
 from pilot.exceptions import CommandError
 from pilot.managers.node_cache import NodeDependencyCache
 from pilot.managers.node_dependencies import NodeDependencies
-from pilot.managers.python_assets import PythonAssetBuilder
 
 
 @pytest.fixture
@@ -73,9 +73,8 @@ def test_cached_install_survives_source_removal_and_skips_yarn(install):
     assert cache.restore(target)
     link = target / "node_modules/.bin/dependency"
     assert link.resolve() == target / "node_modules/dependency.js"
-    builder = PythonAssetBuilder(SimpleNamespace(bench=None))
-    with patch("pilot.managers.python_assets.run_command") as yarn:
-        builder.ensure_yarn_install(target)
+    with patch("pilot.core.app.node_packages.run_command") as yarn:
+        NodePackages(target).ensure_installed()
     yarn.assert_not_called()
     link.write_text("destination edit")
     entry = cache.root / NodeDependencies.get_key(target)

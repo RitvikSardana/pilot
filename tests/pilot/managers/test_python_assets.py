@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import os
+import json
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pilot.exceptions import BenchError
 from pilot.managers.python_assets import PythonAssetBuilder
 
 
@@ -23,140 +25,112 @@ def make_builder() -> PythonAssetBuilder:
     return PythonAssetBuilder(manager)
 
 
-def test_build_assets_for_app_installs_js_deps_before_frappe_build_runs(tmp_path: Path) -> None:
-    """frappe's own `bench build` step shells into `frontend` and runs `yarn build` there,
-    so node_modules must be synced before that step, not only in the standalone loop after it."""
-    app_path = tmp_path / "gameplan"
-    frontend_dir = app_path / "frontend"
-    frontend_dir.mkdir(parents=True)
-    (frontend_dir / "package.json").write_text("{}")
-
+def build_app(app_path: Path, on_install: Callable[[], None] = lambda: None) -> list[list[str]]:
+    """Build `app_path` from source; return every command it ran, installs included."""
     manager = MagicMock()
     manager.bench.frappe_call = ["python"]
-    manager.bench.sites_path = tmp_path / "sites"
+    manager.bench.sites_path = app_path.parent / "sites"
     builder = PythonAssetBuilder(manager)
+    commands: list[list[str]] = []
 
-    events: list[str] = []
+    def record(argv: list[str], **kwargs: object) -> None:
+        commands.append(argv)
+
+    def install(argv: list[str], **kwargs: object) -> None:
+        record(argv)
+        on_install()
 
     with (
-        patch(
-            "pilot.managers.python_assets.run_command",
-            side_effect=lambda *a, **k: events.append("run_command"),
-        ),
-        patch.object(
-            builder,
-            "ensure_yarn_install",
-            side_effect=lambda path: events.append(f"ensure_yarn_install:{path.name}"),
-        ),
+        patch("pilot.core.app.node_packages.shutil.which", side_effect=lambda name: name),
+        patch("pilot.core.app.node_packages.run_command", side_effect=install),
+        patch.object(builder, "run_compiler", side_effect=record),
     ):
-        app = make_app(app_path)
+        app = make_app(app_path, app_path.name)
         app.has_source_changes = True
         builder.build_assets_for_app(app)
+    return commands
 
-    assert events.index("ensure_yarn_install:frontend") < events.index("run_command")
+
+def write_package(path: Path, **package: object) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "package.json").write_text(json.dumps(package))
 
 
-def test_ensure_yarn_install_uses_frozen_lockfile_first(tmp_path: Path) -> None:
-    """A healthy lockfile should keep the reproducible frozen install path."""
-    (tmp_path / "yarn.lock").write_text("lockfile")
+def test_frontend_dependencies_install_before_frappe_build_runs(tmp_path: Path) -> None:
+    """frappe's own `bench build` step runs the app's build script, which builds `frontend`,
+    so node_modules there must be synced before that step."""
+    app_path = tmp_path / "gameplan"
+    write_package(app_path / "frontend")
+    (app_path / "frontend" / "yarn.lock").write_text("")
 
-    with (
-        patch("pilot.managers.python_assets.get_yarn_bin", return_value="yarn"),
-        patch("pilot.managers.python_assets.run_command") as run_command,
-    ):
-        make_builder().ensure_yarn_install(tmp_path)
+    commands = build_app(app_path)
 
-    run_command.assert_called_once_with(
-        ["yarn", "install", "--frozen-lockfile"],
-        cwd=tmp_path,
-        stream_output=True,
+    assert commands.index(["yarn", "install", "--frozen-lockfile"]) < commands.index(
+        ["python", "frappe", "build", "--force", "--app", "gameplan"]
     )
 
 
-def test_ensure_yarn_install_falls_back_to_pure_lockfile(tmp_path: Path) -> None:
-    """An out-of-sync lockfile should retry without modifying yarn.lock."""
-    (tmp_path / "yarn.lock").write_text("lockfile")
+def test_pnpm_workspace_installs_once_and_builds_once(tmp_path: Path) -> None:
+    app_path = tmp_path / "suite"
+    write_package(app_path, scripts={"build": "pnpm --filter frontend build"})
+    (app_path / "pnpm-lock.yaml").write_text("importers:\n\n  .: {}\n\n  frontend: {}\n")
+    write_package(app_path / "frontend", scripts={"build": "vite build"})
 
-    with (
-        patch("pilot.managers.python_assets.get_yarn_bin", return_value="yarn"),
-        patch(
-            "pilot.managers.python_assets.run_command",
-            side_effect=[RuntimeError("lockfile needs update"), None],
-        ) as run_command,
-    ):
-        make_builder().ensure_yarn_install(tmp_path)
+    def write_install_marker() -> None:
+        (app_path / "node_modules").mkdir(exist_ok=True)
+        (app_path / "node_modules" / ".modules.yaml").write_text("")
 
-    assert run_command.call_count == 2
-    assert run_command.call_args_list[0].args[0] == ["yarn", "install", "--frozen-lockfile"]
-    assert run_command.call_args_list[1].args[0] == ["yarn", "install", "--pure-lockfile"]
-    assert run_command.call_args_list[1].kwargs == {"cwd": tmp_path, "stream_output": True}
+    commands = build_app(app_path, on_install=write_install_marker)
 
-
-def test_ensure_yarn_install_checks_contents_even_when_timestamps_match(tmp_path: Path) -> None:
-    from pilot.managers.node_dependencies import NodeDependencies
-
-    lock = tmp_path / "yarn.lock"
-    integrity = tmp_path / "node_modules" / ".yarn-integrity"
-    integrity.parent.mkdir()
-    lock.write_text("lockfile")
-    integrity.write_text("{}")
-    os.utime(lock, (1, 1))
-    os.utime(integrity, (2, 2))
-    (integrity.parent / ".pilot-install-key").write_text(NodeDependencies.get_key(tmp_path))
-
-    with patch("pilot.managers.python_assets.run_command") as run_command:
-        make_builder().ensure_yarn_install(tmp_path)
-
-    run_command.assert_not_called()
-    lock.write_text("changed lockfile")
-    os.utime(lock, (1, 1))
-    with patch("pilot.managers.python_assets.run_command") as run_command:
-        make_builder().ensure_yarn_install(tmp_path)
-    run_command.assert_called_once()
+    assert commands == [
+        ["pnpm", "install", "--frozen-lockfile", "--config.confirmModulesPurge=false"],
+        ["python", "frappe", "build", "--force", "--app", "suite"],
+    ]
 
 
-@pytest.mark.parametrize("corrupted", [b'{"lockfileEntries":', b"\xff", b"[]"])
-def test_corrupt_integrity_reinstalls_despite_matching_stamp(tmp_path: Path, corrupted: bytes) -> None:
-    from pilot.managers.node_dependencies import NodeDependencies
+def test_frontend_builds_after_frappe_build_when_the_app_has_no_build_script(tmp_path: Path) -> None:
+    app_path = tmp_path / "helpdesk"
+    write_package(app_path)
+    write_package(app_path / "frontend", scripts={"build": "vite build"})
+    (app_path / "frontend" / "pnpm-lock.yaml").write_text("")
 
-    (tmp_path / "package.json").write_text("{}")
-    (tmp_path / "yarn.lock").write_text("lockfile")
-    modules = tmp_path / "node_modules"
-    modules.mkdir()
-    integrity = modules / ".yarn-integrity"
-    integrity.write_bytes(corrupted)
-    key = NodeDependencies.get_key(tmp_path)
-    (modules / ".pilot-install-key").write_text(key)
-    assert NodeDependencies.get_resolved_key(tmp_path) == ""
-    assert not NodeDependencies.has_matching_install(tmp_path, key)
+    commands = build_app(app_path)
 
-    def install(*args, **kwargs):
-        integrity.write_text('{"lockfileEntries": {"dependency": "resolved"}}')
+    assert commands[-1] == ["pnpm", "run", "build"]
 
-    with patch("pilot.managers.python_assets.run_command", side_effect=install) as installer:
-        make_builder().ensure_yarn_install(tmp_path)
-    installer.assert_called_once()
-    assert NodeDependencies.has_matching_install(tmp_path, key)
-    assert "resolved" in NodeDependencies.get_resolved_key(tmp_path)
+
+def test_frontend_with_two_lockfiles_fails_before_any_install(tmp_path: Path) -> None:
+    app_path = tmp_path / "helpdesk"
+    write_package(app_path)
+    (app_path / "yarn.lock").write_text("")
+    write_package(app_path / "frontend")
+    (app_path / "frontend" / "yarn.lock").write_text("")
+    (app_path / "frontend" / "pnpm-lock.yaml").write_text("")
+
+    with pytest.raises(BenchError, match=r"yarn\.lock and pnpm-lock\.yaml"):
+        build_app(app_path, on_install=lambda: pytest.fail("installed before the lockfile check"))
 
 
 def test_full_build_installs_nested_dependencies_before_compiling(tmp_path: Path) -> None:
     app_path = tmp_path / "app"
-    for relative in (".", "frontend", "roster"):
-        directory = app_path / relative
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "package.json").write_text("{}")
+    directories = [app_path, app_path / "frontend", app_path / "roster"]
+    for directory in directories:
+        write_package(directory)
     builder = make_builder()
     builder.bench.apps.return_value = [make_app(app_path)]
     installed = []
 
+    def install(argv, **kwargs):
+        installed.append(kwargs["cwd"])
+
     def compile_assets(*args, **kwargs):
-        assert installed == [app_path, app_path / "frontend", app_path / "roster"]
+        assert installed == directories
 
     with (
         patch("pilot.core.bench.build_artifacts.BuildArtifacts.get_key", return_value="key"),
         patch("pilot.core.bench.build_artifacts.BuildArtifacts.capture"),
-        patch.object(builder, "ensure_yarn_install", side_effect=installed.append),
+        patch("pilot.core.app.node_packages.shutil.which", side_effect=lambda name: name),
+        patch("pilot.core.app.node_packages.run_command", side_effect=install),
         patch.object(builder, "run_compiler", side_effect=compile_assets) as compiler,
     ):
         builder.build_assets()
@@ -171,7 +145,7 @@ def test_page_islands_are_built_with_frappe_s_own_script(tmp_path: Path) -> None
 
     with (
         patch.object(builder, "run_compiler") as compile_islands,
-        patch.object(builder, "ensure_yarn_install"),
+        patch("pilot.managers.python_assets.NodePackages"),
     ):
         builder.build_page_islands()
         compile_islands.assert_not_called()  # version-16 has no page islands

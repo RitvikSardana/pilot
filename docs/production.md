@@ -98,6 +98,10 @@ When using Central or another upstream proxy, keep the local Admin service priva
 
 Firewall and WAF config are bench settings. Settings apply code should delegate to core/managers so API routes do not perform system orchestration directly.
 
+## JS Dependencies
+
+Before a build, Pilot installs each app's JS dependencies with the package manager its lockfile names: `pnpm-lock.yaml` uses pnpm, and `yarn.lock` or no lockfile uses yarn. The install uses the frozen lockfile and fails the build when the lockfile is out of date. A `frontend` or `roster` folder without its own lockfile installs from the app root when the app root workspace lists it. For an app root with `pnpm-lock.yaml`, the folder must be an importer in that lockfile. For other app roots, the folder must match the `workspaces` patterns in `package.json`. Pilot installs pnpm into `~/.local` the first time an app needs it. An app with both lockfiles fails the build.
+
 ## Build Memory Cap
 
 Asset builds (`pilot build`, and rebuilds triggered from app updates) run capped at 85% of the host's free memory via a transient systemd scope, so a runaway build fails instead of the kernel picking a victim process, usually the database. Past the RAM cap the build may use the same share of free swap, and the kernel kills the build when it reaches both. A full asset build peaks near 1.6GB, and some app frontends (for example Helpdesk) need more than 2GB, so a host with 4GB of RAM needs swap to build them. An idle bench is around 300MB. Hosts with less free memory than that are refused up front with a clear message rather than started and killed mid-build.

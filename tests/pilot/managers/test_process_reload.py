@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import ANY
 
@@ -172,3 +173,36 @@ def test_stop_all_stops_redis_after_the_workload(tmp_path: Path, monkeypatch) ->
     manager._stop_all()
 
     assert waves == [["web", "admin"], ["redis_cache", "redis_queue"]]
+
+
+def test_dev_child_cannot_consume_the_launchers_script_input(tmp_path: Path) -> None:
+    output = tmp_path / "child-input"
+    script = """
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from pilot.managers.processes.definitions import ProcessDefinition
+from pilot.managers.processes.local import ProcessManager
+
+bench = SimpleNamespace(config=SimpleNamespace(watch_admin_js=False), pids_path=Path(sys.argv[1]))
+manager = ProcessManager(bench)
+definition = ProcessDefinition(
+    name="probe",
+    argv=[sys.executable, "-c",
+          "import sys; from pathlib import Path; Path(sys.argv[1]).write_text(sys.stdin.read())",
+          sys.argv[2]],
+    log_file=Path(sys.argv[1]) / "probe.log",
+)
+manager._spawn(definition)
+assert manager._procs["probe"].wait(timeout=5) == 0
+"""
+    subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), str(output)],
+        input="remaining migration script\n",
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=True,
+    )
+
+    assert output.read_text() == ""

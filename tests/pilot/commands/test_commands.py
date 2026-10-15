@@ -740,7 +740,7 @@ def test_requirements_skips_js_for_app_without_package_json(tmp_path: Path) -> N
     (app_dir / ".git").mkdir()
     # No package.json
 
-    with patch("pilot.utils.run_command") as mock_rc:
+    with patch("pilot.core.app.node_packages.run_command") as mock_rc:
         BenchRuntime(bench)._install_js_requirements(lambda _message: None)
         mock_rc.assert_not_called()
 
@@ -756,8 +756,8 @@ def test_requirements_installs_js_for_app_with_package_json(tmp_path: Path) -> N
     (app_dir / "package.json").write_text('{"name": "myapp"}\n')
 
     with (
-        patch("pilot.utils.get_yarn_bin", return_value="yarn"),
-        patch("pilot.utils.run_command") as mock_rc,
+        patch("pilot.core.app.node_packages.shutil.which", return_value="yarn"),
+        patch("pilot.core.app.node_packages.run_command") as mock_rc,
     ):
         BenchRuntime(bench)._install_js_requirements(lambda _message: None)
         mock_rc.assert_called_once()

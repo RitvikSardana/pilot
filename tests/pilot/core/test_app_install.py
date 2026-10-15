@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,7 +30,7 @@ def _cloner(module: str, seen: list[Path]):
     """Stand in for the git clone, one level below App.clone so its staging
     logic still runs."""
 
-    def clone(self: AppRepository) -> None:
+    def clone(self: AppRepository, on_progress: Callable[[str], None]) -> None:
         seen.append(self.app.path)
         _write_app_tree(self.app.path, module)
 
@@ -95,7 +96,7 @@ def test_install_stages_an_already_cloned_app_instead_of_re_cloning(tmp_path: Pa
     bench.create_directories()
     _write_app_tree(bench.apps_path / "myapp", "myapp")
 
-    def unexpected_clone(self: AppRepository) -> None:
+    def unexpected_clone(self: AppRepository, on_progress: Callable[[str], None]) -> None:
         raise AssertionError("an app already in apps/ must not be re-cloned")
 
     validated_at = []

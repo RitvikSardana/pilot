@@ -352,3 +352,54 @@ def test_proxy_still_reports_an_outage_as_unreachable(tmp_path: Path) -> None:
 
     assert response.status_code == 502
     assert response.get_json()["error"]["code"] == "central_unreachable"
+
+
+@pytest.mark.parametrize(
+    "method, command, fields",
+    [
+        (
+            "save_billing_profile",
+            "frappe.integrations.frappe_providers.cloud_settings.save_billing_profile",
+            {"legal_name": "Acme"},
+        ),
+        (
+            "confirm_payment_method",
+            "frappe.integrations.frappe_providers.cloud_settings.confirm_payment_method",
+            {"payment_method": "pm-1"},
+        ),
+        ("save_billing_profile", "frappe.client.delete", {"legal_name": "Acme"}),
+    ],
+)
+def test_proxy_body_cannot_override_the_allowlisted_method(tmp_path: Path, method, command, fields) -> None:
+    client = _app_client(tmp_path / "bench")
+    _stage_credentials("https://central.test", "tok")
+    method_path = f"central.billing.api.billing_api.{method}"
+
+    with patch(
+        "pilot.integrations.central.client.urllib.request.urlopen",
+        return_value=_FakeResponse({"message": {"saved": True}}),
+    ) as urlopen:
+        response = client.post(
+            f"/api/v1/sites/s1.localhost/central/{method_path}",
+            json={"cmd": command, **fields},
+        )
+
+    assert response.status_code == 200
+    request = urlopen.call_args.args[0]
+    assert request.full_url == f"https://central.test/api/method/{method_path}"
+    assert json.loads(request.data) == fields
+
+
+@pytest.mark.parametrize("body", [[], ["cmd"], "not an object", 42, True])
+def test_proxy_rejects_non_object_body(tmp_path: Path, body) -> None:
+    client = _app_client(tmp_path / "bench")
+    with patch("admin.backend.api.v1.sites.central.CentralClient.forward", return_value={}) as forward:
+        response = client.post(
+            "/api/v1/sites/s1.localhost/central/central.billing.api.billing_api.save_billing_profile",
+            json=body,
+        )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "malformed_body"
+    assert response.get_json()["error"]["message"] == "Request body must be a JSON object."
+    forward.assert_not_called()

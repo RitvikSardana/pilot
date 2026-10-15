@@ -206,3 +206,18 @@ def test_node_version_is_checked_before_yarn_runs(monkeypatch, version: str, is_
     else:
         with pytest.raises(BenchError, match=r"Node\.js 24 or later is required"):
             module.PythonEnvManager.require_node_version()
+
+
+def test_build_env_finds_pnpm_installed_into_local_after_startup(tmp_path: Path, monkeypatch) -> None:
+    from pilot.managers import environment as module
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    manager = module.PythonEnvManager(bench=None)
+    with patch("pilot.core.app.node_packages.shutil.which", return_value=None):
+        assert manager._build_env()["PATH"] == "/usr/bin"
+
+        (tmp_path / ".local" / "bin").mkdir(parents=True)
+        (tmp_path / ".local" / "bin" / "pnpm").write_text("")
+
+        assert manager._build_env()["PATH"].split(":")[0] == str(tmp_path / ".local" / "bin")

@@ -40,7 +40,10 @@ jobs:
         with:
           repository: frappe/pilot
           path: pilot
-          sparse-checkout: scripts
+          # The script installs JS dependencies with Pilot's Python package.
+          sparse-checkout: |
+            scripts
+            pilot
 
       - uses: actions/setup-node@v4
         with:

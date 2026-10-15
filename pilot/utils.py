@@ -1,6 +1,5 @@
 import contextlib
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -369,15 +368,6 @@ def installed_app_version(env_path: Path, name: str) -> str:
                 if line.startswith("Version:"):
                     return line.split(":", 1)[1].strip()
     return ""
-
-
-def get_yarn_bin() -> str:
-    if yarn := shutil.which("yarn"):
-        return yarn
-    local_yarn = Path.home() / ".local" / "bin" / "yarn"
-    if local_yarn.exists():
-        return str(local_yarn)
-    raise BenchError("yarn not found - run pilot init to install it.")
 
 
 def redact_text(text: str, secrets: list[str] | None) -> str:

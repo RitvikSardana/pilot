@@ -7,10 +7,11 @@ import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pilot.core.app.node_packages import PACKAGE_MANAGERS, YARN, get_app_packages
 from pilot.exceptions import BenchError
 from pilot.managers.platform import add_mysqlclient_flags, is_macos, which
 from pilot.managers.python_assets import PythonAssetBuilder
-from pilot.utils import get_yarn_bin, run_command
+from pilot.utils import run_command
 
 MINIMUM_NODE_MAJOR = 24
 
@@ -153,14 +154,13 @@ class PythonEnvManager:
         run_command([uv, "venv", "--python", version, str(self.bench.env_path)], stream_output=True)
 
     def _build_env(self) -> dict:
-        """Build subprocess env with yarn on PATH and macOS mysqlclient flags."""
+        """Build subprocess env with yarn and pnpm on PATH and macOS mysqlclient flags."""
         env = os.environ.copy()
 
-        try:
-            yarn_dir = str(Path(get_yarn_bin()).parent)
-            env["PATH"] = os.pathsep.join([yarn_dir, env.get("PATH", "")])
-        except BenchError:
-            pass  # yarn not installed yet (e.g. compiling C extensions pre-node)
+        # A tool can be missing, for example while C extensions compile before Node is set up.
+        for manager in PACKAGE_MANAGERS:
+            if manager.is_installed:
+                env["PATH"] = os.pathsep.join([str(Path(manager.bin).parent), env.get("PATH", "")])
 
         add_mysqlclient_flags(env)
 
@@ -191,8 +191,7 @@ class PythonEnvManager:
         if not which("node"):
             self._install_node()
         self.require_node_version()
-        if not which("yarn"):
-            self._install_yarn()
+        YARN.ensure_installed()
 
     @staticmethod
     def require_node_version() -> None:
@@ -213,19 +212,10 @@ class PythonEnvManager:
             "Node.js is not installed. Re-run install.sh as root to install it, or install it yourself."
         )
 
-    def _install_yarn(self) -> None:
-        if is_macos():
-            run_command(["npm", "install", "-g", "yarn"])
-        else:
-            npm_prefix = Path.home() / ".local"
-            npm_prefix.mkdir(parents=True, exist_ok=True)
-            run_command(["npm", "install", "-g", "yarn", "--prefix", str(npm_prefix)])
-
     def install_node_dependencies(self) -> None:
         for app in self.bench.apps():
-            if (app.path / "package.json").exists():
-                self._assets.ensure_yarn_install(app.path)
-            self._assets.ensure_frontend_dependencies(app)
+            for packages in get_app_packages(app.path, self._assets.frontend_dirs(app)):
+                packages.ensure_installed()
 
     def build_assets(self) -> None:
         self._assets.build_assets()

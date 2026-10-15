@@ -18,6 +18,16 @@ export interface BillingSummary {
   payment_method: { name: string; label: string } | null
   profile_complete: boolean
   usage?: { name: string; percent: number; detail: string }[]
+  /** The site's open free trial. Absent or null when the site is not on one. */
+  trial?: BillingTrial | null
+}
+
+export interface BillingTrial {
+  state: 'Active' | 'Ended'
+  ends_on: string
+  days_left: number
+  /** When an ended trial's server is deleted. */
+  deletes_on: string | null
 }
 
 export interface PlanOption {

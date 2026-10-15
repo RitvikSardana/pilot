@@ -1,4 +1,7 @@
 import { expect, test } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 
 const site = `e2e-${Date.now()}.localhost`
 
@@ -15,6 +18,65 @@ const appRow = (page, name, action) =>
     .filter({ has: page.getByText(name, { exact: true }) })
     .filter({ has: page.getByRole('button', { name: action }) })
     .last()
+
+const appNames = (value: unknown): string[] | null =>
+  Array.isArray(value) &&
+  value.every((app: unknown) => typeof app === 'string' && /^[a-z][a-z0-9_]*$/.test(app))
+    ? value
+    : null
+
+const logUninstallDiagnostics = () => {
+  const benchRoot = process.env.E2E_BENCH_ROOT
+  if (!benchRoot || !isAbsolute(benchRoot)) {
+    console.info('Uninstall diagnostics: E2E_BENCH_ROOT unavailable')
+    return
+  }
+
+  let config: { status: string; apps?: string[] }
+  try {
+    const siteConfig = JSON.parse(
+      readFileSync(join(benchRoot, 'sites', site, 'site_config.json'), 'utf8'),
+    ) as { installed_apps?: unknown }
+    const apps = appNames(siteConfig?.installed_apps)
+    config = apps ? { status: 'ok', apps } : { status: 'invalid-installed-apps' }
+  } catch {
+    config = { status: 'unavailable' }
+  }
+
+  let database: { status: string; apps?: string[] }
+  try {
+    const env = { ...process.env }
+    delete env.PYTHONPATH
+    const output = execFileSync(
+      join(benchRoot, 'env', 'bin', 'python'),
+      ['-m', 'frappe.utils.bench_helper', 'frappe', '--site', site, 'list-apps', '--format', 'json'],
+      {
+        cwd: join(benchRoot, 'sites'),
+        encoding: 'utf8',
+        timeout: 10_000,
+        maxBuffer: 64 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env,
+      },
+    )
+    const appsBySite = JSON.parse(output) as Record<string, unknown>
+    const apps = appNames(appsBySite?.[site])
+    database = apps ? { status: 'ok', apps } : { status: 'invalid-output' }
+  } catch {
+    database = { status: 'unavailable' }
+  }
+
+  console.info(`Uninstall diagnostics: ${JSON.stringify({ siteConfig: config, database })}`)
+}
+
+test.afterEach(({}, testInfo) => {
+  if (
+    testInfo.title === 'Uninstall the app' &&
+    (testInfo.status === 'failed' || testInfo.status === 'timedOut')
+  ) {
+    logUninstallDiagnostics()
+  }
+})
 
 test('Create a site', async ({ page }) => {
   await page.goto('/sites')
@@ -39,8 +101,16 @@ test('Install an app', async ({ page }) => {
 test('Uninstall the app', async ({ page }) => {
   await page.goto(`/sites/${site}`)
   await appRow(page, 'Blog', 'App actions').getByRole('button', { name: 'App actions' }).click()
-  await page.getByRole('menuitem', { name: 'Uninstall' }).click()
-  await page.getByRole('dialog', { name: 'Uninstall App' }).getByRole('button', { name: 'Uninstall' }).click()
+  const action = page.getByRole('menuitem', { name: /^(Remove|Uninstall)$/ })
+  await expect(action).toBeVisible()
+  await action.click()
+
+  const dialog = page.getByRole('dialog', { name: /^(Remove|Uninstall) App$/ })
+  await expect(dialog).toBeVisible()
+  if (await page.getByRole('dialog', { name: 'Remove App' }).isVisible()) {
+    await dialog.getByRole('button', { name: /^Uninstall .*stops working, and every doctype/ }).click()
+  }
+  await dialog.getByRole('button', { name: 'Uninstall', exact: true }).click()
 
   await waitForTask(page, new RegExp(`/sites/${site}/apps$`))
   await expect(page.getByRole('img', { name: 'Blog', exact: true })).toBeHidden()

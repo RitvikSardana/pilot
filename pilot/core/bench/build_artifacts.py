@@ -10,11 +10,12 @@ import stat
 import tempfile
 from pathlib import Path
 
+from pilot.core.app.node_packages import YARN
 from pilot.core.bench.artifacts import BenchArtifacts
 from pilot.exceptions import CommandError
 from pilot.internal.atomic_file import exclusive_file_lock
 from pilot.managers.node_dependencies import NodeDependencies
-from pilot.utils import get_yarn_bin, run_command
+from pilot.utils import run_command
 
 
 class BuildArtifacts:
@@ -35,7 +36,7 @@ class BuildArtifacts:
         digest.update(
             json.dumps({key: config.get(key) for key in ("developer_mode", "esbuild_target")}).encode()
         )
-        for executable in ("node", get_yarn_bin(), str(self.bench.python)):
+        for executable in ("node", YARN.bin, str(self.bench.python)):
             digest.update(run_command([executable, "--version"]).stdout)
         digest.update(
             run_command(

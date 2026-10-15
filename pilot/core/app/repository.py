@@ -9,6 +9,8 @@ from pilot.exceptions import BenchError, CommandError
 from pilot.utils import run_command
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pilot.core.app import App
     from pilot.internal.git import GitRepo
 
@@ -205,10 +207,13 @@ class AppRepository:
         )
         run_command(["git", "-C", path, "checkout", "--quiet", "FETCH_HEAD"])
 
-    def clone(self) -> None:
-        target = self.app.config.branch or self.get_default_branch()
-        if self.is_commit_hash(target):
-            self.clone_rev(target)
+    def clone(self, on_progress: Callable[[str], None] = lambda message: None) -> None:
+        branch = self.app.config.branch or self.get_default_branch()
+        if self.is_commit_hash(branch):
+            on_progress(
+                f"{self.app.config.name} is checked out at a commit with no branch; pass --branch with --commit."
+            )
+            self.clone_rev(branch)
         else:
             run_command(
                 [
@@ -216,14 +221,14 @@ class AppRepository:
                     "clone",
                     self.remote_url,
                     "--branch",
-                    target,
+                    branch,
                     *self.depth_flags,
                     str(self.app.path),
                 ],
                 env=self.git_env,
                 stream_output=True,
             )
-            self.app.config.branch = target
+            self.app.config.branch = branch
 
     @property
     def is_shallow(self) -> bool:

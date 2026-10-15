@@ -79,6 +79,9 @@ class CentralClient:
         headers = {self.TOKEN_HEADER: token}
         body = None
         if data is not None:
+            # Frappe dispatches a body-level cmd before the method in the URL.
+            data = data.copy()
+            data.pop("cmd", None)
             headers["Content-Type"] = "application/json"
             body = json.dumps(data).encode()
 

@@ -9,9 +9,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pilot.core.app.node_packages import NodePackages, get_app_packages
 from pilot.exceptions import BenchError, CommandError
 from pilot.managers.systemd_user import can_cap_memory, memory_capped, systemctl_env
-from pilot.utils import get_yarn_bin, run_command
+from pilot.utils import run_command
 
 if TYPE_CHECKING:
     from pilot.core.app import App
@@ -64,9 +65,8 @@ class PythonAssetBuilder:
 
         artifacts = BuildArtifacts(self.bench)
         for app in self.bench.apps():
-            if (app.path / "package.json").exists():
-                self.ensure_yarn_install(app.path)
-            self.ensure_frontend_dependencies(app)
+            for packages in get_app_packages(app.path, self.frontend_dirs(app)):
+                packages.ensure_installed()
         key = artifacts.get_key()
         self.run_compiler(
             [*self.bench.frappe_call, "frappe", "build", "--force"],
@@ -82,8 +82,8 @@ class PythonAssetBuilder:
         dist_dir = app_public_dir / "dist"
 
         # Desk serves /assets/frappe/node_modules, and every server build runs Frappe's esbuild.
-        if app.config.name == "frappe" and (app.path / "package.json").exists():
-            self.ensure_yarn_install(app.path)
+        if app.config.name == "frappe":
+            NodePackages(app.path).ensure_installed()
 
         if not force and not app.has_source_changes:
             from pilot.core.app.prebuilt_assets import PrebuiltAssets
@@ -95,10 +95,10 @@ class PythonAssetBuilder:
                     self.build_page_islands()
                 return
 
-        if (app.path / "package.json").exists():
-            self.ensure_yarn_install(app.path)
-
-        self.ensure_frontend_dependencies(app)
+        # Frappe's build runs the app's build script, which can build `frontend`/`roster`, so
+        # their node_modules must be installed before it.
+        for packages in get_app_packages(app.path, self.frontend_dirs(app)):
+            packages.ensure_installed()
 
         print(f"  Building assets for {app.config.name}...")
         sys.stdout.flush()
@@ -109,52 +109,26 @@ class PythonAssetBuilder:
             stream_output=True,
         )
 
-        for frontend_dir in ["frontend", "roster"]:
-            if (app.path / frontend_dir / "package.json").exists():
-                print(f"  Building {frontend_dir} for {app.config.name}...")
-                sys.stdout.flush()
-                self.run_compiler(
-                    [get_yarn_bin(), "build"],
-                    cwd=app.path / frontend_dir,
-                    stream_output=True,
-                )
-
-    def ensure_frontend_dependencies(self, app: "App") -> None:
-        """frappe's own `bench build` shells into `frontend`/`roster`, so node_modules must
-        be synced there before that step runs, not just in the standalone build loop after it."""
-        for frontend_dir in ["frontend", "roster"]:
-            if (app.path / frontend_dir / "package.json").exists():
-                print(f"  Installing JS dependencies for {frontend_dir} of {app.config.name}...")
-                sys.stdout.flush()
-                self.ensure_yarn_install(app.path / frontend_dir)
-
-    def ensure_yarn_install(self, path: Path) -> None:
-        """Install when dependency inputs or the local toolchain changed."""
-        from pilot.managers.node_dependencies import NodeDependencies
-
-        key = NodeDependencies.get_key(path)
-        if NodeDependencies.has_matching_install(path, key):
+        # Frappe's build already ran the app's own build script, which builds its frontends.
+        if NodePackages(app.path).has_build_script:
             return
-        app_name = path.name
-        print(f"  Installing JS dependencies for {app_name}...")
-        sys.stdout.flush()
-        try:
-            run_command(
-                [get_yarn_bin(), "install", "--frozen-lockfile"],
-                cwd=path,
-                stream_output=True,
-            )
-        except Exception:
-            print(f"  Frozen lockfile install failed for {app_name}; retrying without modifying yarn.lock...")
+        for frontend_dir in self.frontend_dirs(app):
+            print(f"  Building {frontend_dir.name} for {app.config.name}...")
             sys.stdout.flush()
-            run_command(
-                [get_yarn_bin(), "install", "--pure-lockfile"],
-                cwd=path,
+            self.run_compiler(
+                NodePackages(frontend_dir, app.path).get_script_command("build"),
+                cwd=frontend_dir,
+                env=self.manager._build_env(),
                 stream_output=True,
             )
-        integrity = path / "node_modules" / ".yarn-integrity"
-        if integrity.is_file():
-            (integrity.parent / ".pilot-install-key").write_text(key)
+
+    @staticmethod
+    def frontend_dirs(app: "App") -> list[Path]:
+        return [
+            app.path / name
+            for name in ("frontend", "roster")
+            if NodePackages(app.path / name).has_package_json
+        ]
 
     def setup_prebuilt_assets(
         self,
@@ -197,7 +171,7 @@ class PythonAssetBuilder:
         script = frappe_path / "ui" / "vite" / "island" / "build-pages.js"
         if not script.exists():
             return
-        self.ensure_yarn_install(script.parent / "toolchain")
+        NodePackages(script.parent / "toolchain").ensure_installed()
         print("  Building Frappe UI page islands...")
         sys.stdout.flush()
         self.run_compiler(["node", str(script), "--production"], cwd=frappe_path, stream_output=True)

@@ -240,6 +240,7 @@ class ProcessManager:
     def _spawn(self, pd: ProcessDefinition) -> None:
         proc = subprocess.Popen(
             pd.argv,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,

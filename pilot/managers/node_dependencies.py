@@ -7,8 +7,8 @@ import platform
 import shutil
 from pathlib import Path
 
+from pilot.core.app.node_packages import YARN
 from pilot.core.bench.artifacts import BenchArtifacts
-from pilot.utils import get_yarn_bin
 
 
 class NodeDependencies:
@@ -18,7 +18,7 @@ class NodeDependencies:
     def get_key(path: Path, *, include_dependencies: bool = True) -> str:
         digest = hashlib.sha256(platform.platform().encode())
         NodeDependencies.update_file_key(digest, path, include_dependencies=include_dependencies)
-        for binary in (shutil.which("node"), shutil.which(get_yarn_bin())):
+        for binary in (shutil.which("node"), shutil.which(YARN.bin)):
             if binary:
                 file = Path(binary).resolve()
                 digest.update(f"{file}:{file.stat().st_mtime_ns}:{file.stat().st_size}".encode())

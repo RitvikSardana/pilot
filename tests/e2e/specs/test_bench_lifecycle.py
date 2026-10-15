@@ -70,7 +70,12 @@ def test_dashboard_specs(bench, browser_name):
     subprocess.run(
         ["npx", "playwright", "test"],
         cwd=DASHBOARD_DIR,
-        env={**os.environ, "E2E_BASE_URL": bench.admin_url, "E2E_ADMIN_PASSWORD": bench.admin_password},
+        env={
+            **os.environ,
+            "E2E_BASE_URL": bench.admin_url,
+            "E2E_ADMIN_PASSWORD": bench.admin_password,
+            "E2E_BENCH_ROOT": str(bench.dir),
+        },
         check=True,
     )
 

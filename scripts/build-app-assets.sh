@@ -82,19 +82,23 @@ done
 # Some SPAs import their dev ports from here at build time; these are Frappe's defaults.
 echo '{"webserver_port": 8000, "socketio_port": 9000}' > "$bench/sites/common_site_config.json"
 
+# App build scripts such as `pnpm --filter frontend build` need the pnpm installed into ~/.local/bin.
+pilot_root=$(dirname "$(dirname "$(realpath "$0")")")
+export PATH="$PATH:$HOME/.local/bin"
+install_js_dependencies() {
+    PYTHONPATH="$pilot_root" python3 -m pilot.core.app.node_packages "$@"
+}
+
 echo "==> Installing JS dependencies"
-(cd "$bench/apps/frappe" && yarn install --frozen-lockfile --silent)
+if [ "$app" != frappe ]; then
+    install_js_dependencies "$bench/apps/frappe"
+fi
 build_dirs=()
-[ "$app" != frappe ] && build_dirs+=("")
 for spa in "${spas[@]}"; do
     read -r build_dir _ _ <<< "$spa"
     [ "$build_dir" != "-" ] && build_dirs+=("$build_dir")
 done
-for dir in "${build_dirs[@]}"; do
-    if [ -f "$app_dir/${dir:+$dir/}package.json" ]; then
-        (cd "$app_dir/$dir" && yarn install --frozen-lockfile --silent)
-    fi
-done
+install_js_dependencies "$app_dir" "${build_dirs[@]}"
 
 # As `bench build` does: bundles import "<app>/public/node_modules/...", such as Frappe's desk.bundle.scss.
 for name in "${apps[@]}"; do

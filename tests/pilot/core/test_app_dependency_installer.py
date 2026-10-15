@@ -61,6 +61,7 @@ def test_install_installs_missing_dependency(tmp_path: Path) -> None:
     mock_install.assert_called_once()
     _, kwargs = mock_install.call_args
     assert kwargs["install_dependencies"] is False
+    assert kwargs["skip_assets"] is False
     # A dependency is validated like any other app - nothing installs unvalidated.
     assert result == []  # dep wasn't actually created on disk by the mocked install()
 

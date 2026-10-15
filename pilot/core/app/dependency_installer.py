@@ -21,11 +21,16 @@ class AppDependencyInstaller:
         self.bench = bench
         self.app = app
 
-    def install(self, on_progress: Callable[[str], None] = lambda message: None) -> list["App"]:
+    def install(
+        self,
+        on_progress: Callable[[str], None] = lambda message: None,
+        *,
+        skip_assets: bool = False,
+    ) -> list["App"]:
         resolver = self._find_resolver()
         if resolver is None:
             return []
-        self._install_missing(resolver, on_progress)
+        self._install_missing(resolver, on_progress, skip_assets)
         return self._dependency_apps(resolver)
 
     def _find_resolver(self) -> Resolver | None:
@@ -41,7 +46,9 @@ class AppDependencyInstaller:
                 ) from exc
             return None
 
-    def _install_missing(self, resolver: Resolver, on_progress: Callable[[str], None]) -> None:
+    def _install_missing(
+        self, resolver: Resolver, on_progress: Callable[[str], None], skip_assets: bool
+    ) -> None:
         if all(self.bench.is_app_installed(dep) for dep in resolver.dependencies):
             return
 
@@ -64,6 +71,7 @@ class AppDependencyInstaller:
             dependency = App(AppConfig(name=dep.app, repo=dep.repo, branch=dep.branch), self.bench)
             dependency.install(
                 install_dependencies=False,
+                skip_assets=skip_assets,
                 commit=dep.commit,
                 on_progress=on_progress,
             )
