@@ -98,7 +98,7 @@ const submit = async () => {
 <template>
   <Dialog v-model="open" :title="title" size="lg">
     <form class="flex flex-col gap-5" @submit.prevent="submit">
-      <p class="text-p-sm text-ink-gray-6 leading-relaxed">
+      <p class="text-p-sm text-ink-gray-6 leading-4">
         {{
           isSite
             ? 'Create a fresh copy of this site for testing or UAT.'
@@ -114,10 +114,10 @@ const submit = async () => {
           class="size-5 text-ink-gray-5 shrink-0"
         />
         <div class="min-w-0">
-          <p class="text-p-xs text-ink-gray-5">
+          <p class="text-xs text-ink-gray-5">
             {{ isSite ? 'Source site' : 'Source bench' }}
           </p>
-          <p class="mt-1 text-p-sm font-medium text-ink-gray-9 truncate">
+          <p class="text-sm-medium text-ink-gray-9 truncate">
             {{ source }}
           </p>
         </div>
@@ -168,11 +168,11 @@ const submit = async () => {
 
       <div class="flex flex-col gap-3 text-p-sm text-ink-gray-6">
         <template v-if="isSite">
-          <p class="flex items-start gap-2">
+          <p class="flex items-start gap-2 leading-4">
             <span class="lucide-database size-4 mt-0.5 shrink-0" /> A separate database, credentials
             and copy of public and private files.
           </p>
-          <p class="flex items-start gap-2">
+          <p class="flex items-start gap-2 leading-4">
             <span class="lucide-code size-4 mt-0.5 shrink-0" />
             {{
               sameBench
@@ -188,7 +188,7 @@ const submit = async () => {
           </div>
         </template>
         <template v-else>
-          <p class="flex items-start gap-2">
+          <p class="flex items-start gap-2 leading-4">
             <span class="lucide-git-branch size-4 mt-0.5 shrink-0" />Independent app files and Git
             repositories, using the selected branches.
           </p>
