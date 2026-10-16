@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pilot.core.app.node_packages import PACKAGE_MANAGERS, YARN, NodePackages
-from pilot.exceptions import BenchError
+from pilot.exceptions import BenchError, CommandError
 from pilot.managers.platform import add_mysqlclient_flags, is_macos, which
 from pilot.managers.python_assets import PythonAssetBuilder
 from pilot.utils import run_command
@@ -167,10 +167,23 @@ class PythonEnvManager:
         return env
 
     def install_app(self, app: "App") -> None:
+        """Install the app editable. A dev extra that does not resolve does not block it."""
+        target = app.editable_target
+        try:
+            self._install_editable(target)
+        except CommandError:
+            if target == str(app.path):
+                raise
+            print(
+                f"Warning: the dev extra of {app.config.name} does not install; installing {app.config.name} without it."
+            )
+            self._install_editable(str(app.path))
+
+    def _install_editable(self, target: str) -> None:
         uv = ensure_uv()
         python = str(self.bench.env_path / "bin" / "python")
         run_command(
-            [uv, "pip", "install", "--python", python, "-e", app.editable_target],
+            [uv, "pip", "install", "--python", python, "-e", target],
             stream_output=True,
             env=self._build_env(),
         )

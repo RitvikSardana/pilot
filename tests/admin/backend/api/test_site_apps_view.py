@@ -85,6 +85,49 @@ def test_site_apps_falls_back_to_name_when_app_missing(tmp_path: Path) -> None:
     apps = {app["name"]: app for app in response.get_json()["apps"]}
     assert apps["ghost"]["title"] == "ghost"
     assert apps["ghost"]["description"] == ""
+    assert apps["ghost"]["missing"] is True
+
+
+def test_site_apps_marks_only_the_listed_repository_as_marketplace(tmp_path: Path) -> None:
+    bench_root = tmp_path / "benches" / "current"
+    _make_site(bench_root, "site1.localhost", ["suite"])
+    _make_app(bench_root, "suite", '[project]\nname = "suite"\n')
+
+    client = _client(bench_root)
+    with patch("pilot.core.app.App.is_marketplace", new=False):
+        response = client.get("/api/v1/sites/site1.localhost/apps")
+
+    suite = response.get_json()["apps"][0]
+    assert suite["is_marketplace"] is False
+    assert "missing" not in suite
+
+
+def test_site_apps_keeps_an_app_whose_details_cannot_be_read(tmp_path: Path, caplog) -> None:
+    from pilot.exceptions import BenchError
+
+    bench_root = tmp_path / "benches" / "current"
+    _make_site(bench_root, "site1.localhost", ["suite"])
+    _make_app(bench_root, "suite", '[project]\nname = "suite"\n')
+
+    client = _client(bench_root)
+    with patch("admin.backend.providers.apps.AppProvider.get_app", side_effect=BenchError("registry is down")):
+        response = client.get("/api/v1/sites/site1.localhost/apps")
+
+    assert response.status_code == 200
+    assert response.get_json()["apps"][0]["name"] == "suite"
+    assert "registry is down" in caplog.text
+
+
+def test_site_apps_reports_an_unexpected_lookup_error(tmp_path: Path) -> None:
+    bench_root = tmp_path / "benches" / "current"
+    _make_site(bench_root, "site1.localhost", ["suite"])
+    _make_app(bench_root, "suite", '[project]\nname = "suite"\n')
+
+    client = _client(bench_root)
+    with patch("admin.backend.providers.apps.AppProvider.get_app", side_effect=RuntimeError("bug")):
+        response = client.get("/api/v1/sites/site1.localhost/apps")
+
+    assert response.status_code == 500
 
 
 def test_site_marketplace_returns_catalog_for_existing_site(tmp_path: Path) -> None:
@@ -403,7 +446,17 @@ def test_delete_site_app_queues_uninstall(tmp_path: Path) -> None:
     body = response.get_json()
     assert response.status_code == 202
     assert body["command"] == "uninstall-app"
-    assert body["args"] == {"site": "site1.localhost", "app": "suite", "force": False}
+    assert body["args"] == {"site": "site1.localhost", "app": "suite", "force": False, "remove_from_bench": True}
+
+
+def test_delete_site_app_keeps_the_app_on_the_bench_when_asked(tmp_path: Path) -> None:
+    bench_root = tmp_path / "benches" / "current"
+    _make_site(bench_root, "site1.localhost", ["suite"])
+    client = _client(bench_root)
+
+    response = _delete_app(client, "site1.localhost", "suite", remove_from_bench="false")
+
+    assert response.get_json()["args"]["remove_from_bench"] is False
 
 
 def test_delete_site_app_passes_force_flag(tmp_path: Path) -> None:

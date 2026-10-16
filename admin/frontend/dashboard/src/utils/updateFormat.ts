@@ -178,3 +178,9 @@ export const siteStatus = (site: OperationSite): SiteStatus => {
     return { label: 'Backup skipped', tone: 'gray', value: 'unsupported' }
   return { label: 'Pending', tone: 'gray', value: 'pending' }
 }
+
+/** Whether any selected app needs a migrate. An app without the flag counts as needing one. */
+export const needsMigrate = (
+  selected: Iterable<string>,
+  updates: Record<string, { has_migrate_changes?: boolean } | undefined>,
+) => [...selected].some((name) => updates[name]?.has_migrate_changes !== false)

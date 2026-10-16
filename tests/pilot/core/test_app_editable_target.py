@@ -84,3 +84,45 @@ def test_install_dev_extra_false_skips_the_dev_extra(tmp_path: Path) -> None:
 
     assert app.has_dev_extra
     assert app.editable_target == str(app.path)
+
+
+def test_install_falls_back_without_the_dev_extra_when_it_does_not_resolve(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from pilot.exceptions import CommandError
+    from pilot.managers.environment import PythonEnvManager
+
+    bench = make_bench(tmp_path)
+    bench.config.production.enabled = False
+    app = _make_app(bench, "frappe", _WITH_DEV_EXTRA)
+
+    with (
+        patch("pilot.managers.environment.ensure_uv", return_value="uv"),
+        patch(
+            "pilot.managers.environment.run_command", side_effect=[CommandError("no solution"), None]
+        ) as run,
+    ):
+        PythonEnvManager(bench).install_app(app)
+
+    assert [call.args[0][-1] for call in run.call_args_list] == [f"{app.path}[dev]", str(app.path)]
+
+
+def test_install_without_a_dev_extra_raises_the_install_error(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    import pytest
+
+    from pilot.exceptions import CommandError
+    from pilot.managers.environment import PythonEnvManager
+
+    bench = make_bench(tmp_path)
+    app = _make_app(bench, "myapp", _WITHOUT_DEV_EXTRA)
+
+    with (
+        patch("pilot.managers.environment.ensure_uv", return_value="uv"),
+        patch("pilot.managers.environment.run_command", side_effect=CommandError("broken")) as run,
+        pytest.raises(CommandError, match="broken"),
+    ):
+        PythonEnvManager(bench).install_app(app)
+
+    assert run.call_count == 1

@@ -18,13 +18,17 @@ def cron_module_command(module: str, arguments: list, log_file: Path) -> str:
 
     Cron starts in the user's home directory, which holds the source tree. That directory shadows
     the real `pilot` package as an empty namespace package, so PYTHONPATH pins the source root.
-    `pilot` itself has no third-party dependencies, so a path is all any interpreter needs.
+    The admin venv runs it whoever writes the entry (the CLI runs on the system Python), because
+    a job such as the S3 backup upload needs its packages. A source checkout without it uses
+    the current interpreter.
     """
+    from pilot.managers.environment import AdminEnvManager
     from pilot.utils import cli_root
 
+    admin_python = AdminEnvManager(cli_root()).python
     parts = [
         f"PYTHONPATH={shlex.quote(str(cli_root()))}",
-        shlex.quote(sys.executable),
+        shlex.quote(str(admin_python) if admin_python.exists() else sys.executable),
         "-m",
         module,
         *(shlex.quote(str(argument)) for argument in arguments),
@@ -63,15 +67,28 @@ class CronManager:
                     lines.append(entry)
             self._write_crontab(lines)
 
+    def move_schedule(self, old_key: str, new_key: str, command: str) -> None:
+        """Re-key an entry with a new command, keeping its schedule, in one crontab write."""
+        with self._lock():
+            lines = self._read_crontab()
+            old_marker = self._marker(old_key)
+            if old_marker not in lines:
+                return
+            i = lines.index(old_marker)
+            expression = " ".join(lines[i + 1].split()[:5]) if i + 1 < len(lines) else ""
+            if not expression:
+                return
+            lines[i : i + 2] = [self._marker(new_key), f"{expression} {command}"]
+            self._write_crontab(lines)
+
     def remove_schedule(self, job_key: str) -> None:
         with self._lock():
             lines = self._read_crontab()
             marker = self._marker(job_key)
-            try:
-                i = lines.index(marker)
-                del lines[i : i + 2]
-            except ValueError:
-                pass
+            if marker not in lines:
+                return
+            i = lines.index(marker)
+            del lines[i : i + 2]
             self._write_crontab(lines)
 
     def _marker(self, job_key: str) -> str:

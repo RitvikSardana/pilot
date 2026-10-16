@@ -124,6 +124,20 @@ class TaskStore:
                 task_dir.name for task_dir in self._files.task_dirs() if (task_dir / "process.json").exists()
             )
 
+    def running_task_ids_without_process(self) -> list[str]:
+        """Tasks claimed by a worker that stopped before it recorded their process."""
+        with self.locked():
+            task_ids = []
+            for task_dir in self._files.task_dirs():
+                if (task_dir / "process.json").exists():
+                    continue
+                try:
+                    if self.read_status(task_dir.name) == TaskStatus.RUNNING:
+                        task_ids.append(task_dir.name)
+                except (OSError, ValueError, TaskNotFoundError):
+                    continue
+            return sorted(task_ids)
+
     def terminal_task_ids_with_callbacks(self) -> list[str]:
         with self.locked():
             task_ids = []

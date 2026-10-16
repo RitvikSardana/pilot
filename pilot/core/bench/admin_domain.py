@@ -245,6 +245,4 @@ class AdminDomainChange:
 
         if not self.bench.config.production.enabled:
             return
-        nginx = NginxManager(self.bench)
-        nginx.generate_config(ssl_ready=True)
-        nginx.reload()
+        NginxManager(self.bench).apply_config()

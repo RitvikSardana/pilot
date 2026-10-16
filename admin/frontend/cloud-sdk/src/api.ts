@@ -1,5 +1,5 @@
 import { call } from './request.ts'
-import type { Analytics, Backups, BillingProfile, BillingSummary, CloudContext, DnsRecord, Domains, Marketplace, PaymentCheckout, PaymentGateway, PaymentMethodSetup, PaymentStatus, PlanOptions, SiteConfiguration, Storage, TaskStatus, TaskSubmission, Uptime } from './types.ts'
+import type { AccountLinks, Analytics, Backups, BillingProfile, BillingSummary, CloudContext, DnsRecord, Domains, Marketplace, PaymentCheckout, PaymentGateway, PaymentMethodSetup, PaymentStatus, PlanChange, PlanOptions, SiteConfiguration, Storage, TaskStatus, TaskSubmission, Uptime } from './types.ts'
 
 export { CloudSettingsError, isMigrationConflict } from './request.ts'
 export type * from './types.ts'
@@ -7,7 +7,7 @@ export type * from './types.ts'
 
 export const getContext = () => call<CloudContext>('get_context', {}, 'GET')
 
-export const getAccountUrl = () => call<{ url: string }>('get_account_url', {}, 'GET')
+export const getAccountUrl = () => call<AccountLinks>('get_account_url', {}, 'GET')
 
 export const getBilling = () => call<BillingSummary>('get_billing', {}, 'GET')
 
@@ -25,7 +25,7 @@ export const getPlanOptions = ({ provider, region }: PlanFilters = {}) => {
   return call<PlanOptions>('get_plan_options', args, 'GET')
 }
 
-export const changePlan = (plan: string) => call('change_plan', { plan })
+export const changePlan = (plan: string) => call<PlanChange>('change_plan', { plan })
 
 export const getBillingProfile = () => call<BillingProfile>('get_billing_profile', {}, 'GET')
 

@@ -28,13 +28,14 @@ def test_build_for_a_site_delegates_to_the_site(tmp_path):
     assert built == ["a.localhost"]
 
 
-def test_a_site_builds_the_apps_it_runs():
+def test_a_site_builds_the_apps_it_runs_that_the_bench_has():
     from pilot.core.site import Site
 
     calls = []
+    bench_apps = [SimpleNamespace(config=SimpleNamespace(name=name)) for name in ("frappe", "erpnext")]
     site = SimpleNamespace(
-        active_apps=lambda: ["frappe", "erpnext"],
-        bench=SimpleNamespace(rebuild_assets=lambda **kwargs: calls.append(kwargs)),
+        active_apps=lambda: ["frappe", "erpnext", "restored_elsewhere"],
+        bench=SimpleNamespace(apps=lambda: bench_apps, rebuild_assets=lambda **kwargs: calls.append(kwargs)),
     )
     Site.build_assets(site)
     assert calls == [{"apps": ["frappe", "erpnext"], "force": True}]

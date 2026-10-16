@@ -17,6 +17,13 @@ OLD = "old.example.com"
 NEW = "new.example.com"
 
 
+@pytest.fixture(autouse=True)
+def _no_backup_schedule():
+    """Keep the host's real crontab out of these tests."""
+    with patch("pilot.managers.cron.CronManager.move_schedule"):
+        yield
+
+
 def _site(bench: Bench, name: str, **config) -> None:
     site_dir = bench.sites_path / name
     site_dir.mkdir(parents=True, exist_ok=True)
@@ -594,3 +601,15 @@ def test_a_custom_sender_name_survives_a_rename(tmp_path: Path) -> None:
     _rename(bench)
 
     assert _config(bench, NEW)["email_sender_name"] == "Acme Support"
+
+
+def test_a_backup_schedule_follows_the_site_to_its_new_name(tmp_path: Path) -> None:
+    bench = _bench(tmp_path)
+    _site(bench, OLD)
+
+    with patch("pilot.managers.cron.CronManager.move_schedule") as move_schedule:
+        _rename(bench)
+
+    old_key, new_key, command = move_schedule.call_args.args
+    assert (old_key, new_key) == (OLD, NEW)
+    assert f"backup_site {bench.path} {NEW}" in command

@@ -3,8 +3,28 @@ from __future__ import annotations
 import typing
 from collections.abc import Callable
 
+from pilot.core.credential import RotatingCredential
+
 if typing.TYPE_CHECKING:
     from pilot.core.bench import Bench
+
+
+class DatumCredential(RotatingCredential):
+    """The Datum token metrics and logs ship with, rotated from Central."""
+
+    def __init__(
+        self,
+        bench: Bench,
+        token: str,
+        on_progress: Callable[[str], None] = lambda message: None,
+    ) -> None:
+        super().__init__(token)
+        self.bench = bench
+        self.on_progress = on_progress
+
+    def rotate(self) -> str:
+        apply_credential(self.bench, on_progress=self.on_progress)
+        return self.bench.config.telemetry.token
 
 
 def apply_credential(

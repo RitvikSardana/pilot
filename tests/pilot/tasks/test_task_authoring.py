@@ -114,6 +114,15 @@ def test_task_bool_field_becomes_store_true_flag(tmp_path: Path) -> None:
     assert parse_task(ParserTask, tmp_path, ["site.localhost", "frappe"]).loud is False
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_a_bool_field_that_defaults_to_true_reaches_the_task_either_way(tmp_path: Path, value: bool) -> None:
+    from pilot.tasks.rename_site import RenameSiteTask
+
+    argv = task_argv_suffix(RenameSiteTask, {"site": "a.localhost", "new_name": "b.localhost", "keep_old_hostname": value})
+
+    assert parse_task(RenameSiteTask, tmp_path, argv).keep_old_hostname is value
+
+
 def test_task_optional_field_uses_kebab_case_flag_and_default(tmp_path: Path) -> None:
     assert parse_task(ParserTask, tmp_path, ["site.localhost", "frappe", "--count", "3"]).count == 3
     assert parse_task(ParserTask, tmp_path, ["site.localhost", "frappe"]).count == 1

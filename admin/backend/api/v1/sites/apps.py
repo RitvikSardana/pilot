@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,7 @@ from pilot.tasks.install_app import InstallAppTask
 from pilot.tasks.uninstall_app import UninstallAppTask
 
 if TYPE_CHECKING:
+    from admin.backend.api.v1.types.site_apps import SiteApp
     from pilot.core.app import App
 
 # frappe's CLI prints a traceback, so its reason arrives behind the exception class.
@@ -54,37 +56,44 @@ def site_apps(name: str):
     except Exception:
         return internal_error("Could not read site apps.")
 
+    bench = Bench(bench_root)
     provider = AppProvider(bench_root)
-    result = []
+    result: list[SiteApp] = []
     for app_name in site.active_apps:
+        entry: SiteApp = {
+            "name": app_name,
+            "title": app_name,
+            "description": "",
+            "branch": "",
+            "commit": "",
+            "version": "",
+            "repo": "",
+        }
+        try:
+            app = bench.app(app_name)
+        except BenchError:
+            # Listed by the site, as after a restore from another bench, but not on this bench.
+            result.append({**entry, "missing": True})
+            continue
         try:
             info = provider.get_app(app_name)
-            result.append(
-                {
-                    "name": app_name,
-                    "title": info.title,
-                    "description": info.description,
-                    "branch": info.branch,
-                    "commit": info.current_commit,
-                    "version": info.installed_version,
-                    "repo": info.repo,
-                    "has_local_changes": info.has_local_changes,
-                }
-            )
-        except Exception:
-            result.append(
-                {
-                    "name": app_name,
-                    "title": app_name,
-                    "description": "",
-                    "branch": "",
-                    "commit": "",
-                    "version": "",
-                    "repo": "",
-                }
-            )
+            entry |= {
+                "title": info.title,
+                "description": info.description,
+                "branch": info.branch,
+                "commit": info.current_commit,
+                "version": info.installed_version,
+                "repo": info.repo,
+                "has_local_changes": info.has_local_changes,
+                # Registry links and metadata describe the listed repository, not a fork of it.
+                "is_marketplace": app.is_marketplace,
+            }
+        except (BenchError, OSError, ValueError, subprocess.SubprocessError) as error:
+            # An unreadable app keeps its row, with its name only.
+            current_app.logger.warning("Could not read details of app %s: %s", app_name, error)
+        result.append(entry)
 
-    return jsonify({"apps": result, "can_disable": Bench(bench_root).has_app_disabling})
+    return jsonify({"apps": result, "can_disable": bench.has_app_disabling})
 
 
 @sites_bp.get("/<name>/marketplace")
@@ -334,8 +343,11 @@ def delete_site_app(name: str, app: str):
         return jsonify({"app": app, "disabled": True})
 
     force = request.args.get("force") == "true"
+    remove_from_bench = request.args.get("remove_from_bench") != "false"
     try:
-        task_id = UninstallAppTask.queue(bench, site=name, app=app, force=force)
+        task_id = UninstallAppTask.queue(
+            bench, site=name, app=app, force=force, remove_from_bench=remove_from_bench
+        )
     except Exception as error:
         return task_failure(error)
     return accepted_task_response(bench_root, task_id)

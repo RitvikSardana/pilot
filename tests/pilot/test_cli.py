@@ -206,3 +206,33 @@ def test_main_dispatches_all_benches_without_selecting_one(
     cli.main()
 
     assert dispatched == [("restart", "all")]
+
+
+def test_main_keeps_pilot_flags_out_of_the_frappe_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        dispatch, "run_frappe", lambda context, args: calls.append((context.assume_yes, args))
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["pilot", "-b", "demo", "-y", "--site", "s.localhost", "reinstall", "--yes"]
+    )
+
+    cli.main()
+
+    assert calls == [(True, ["--site", "s.localhost", "reinstall", "--yes"])]
+
+
+def test_version_is_pilots_own(capsys: pytest.CaptureFixture[str]) -> None:
+    import pilot
+
+    assert not dispatch.is_frappe_passthrough(["--version"])
+    with pytest.raises(SystemExit):
+        registry.build_parser().parse_args(["--version"])
+
+    assert capsys.readouterr().out.strip() == f"pilot {pilot.__version__}"
+
+
+def test_every_command_group_is_discovered() -> None:
+    names = {(command.group, command.name) for command in registry._discover()}
+
+    assert ("remove", "logs") in names

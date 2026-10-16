@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 from pilot.utils import run_command
@@ -20,12 +21,18 @@ def systemctl_env() -> dict:
 
 
 def can_cap_memory() -> bool:
-    """Can we cap memory usage."""
+    """Whether a build can run in a memory-capped scope. A trial scope catches a host without
+    a user bus."""
     controllers = Path(f"/sys/fs/cgroup/user.slice/user-{os.getuid()}.slice/cgroup.controllers")
     try:
-        return bool(shutil.which("systemd-run")) and "memory" in controllers.read_text().split()
-    except OSError:
+        if not shutil.which("systemd-run") or "memory" not in controllers.read_text().split():
+            return False
+        trial = subprocess.run(
+            memory_capped(["true"], 64, 0), env=systemctl_env(), capture_output=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return False
+    return trial.returncode == 0
 
 
 def memory_capped(argv: list[str], memory_max_mb: int, swap_max_mb: int) -> list[str]:

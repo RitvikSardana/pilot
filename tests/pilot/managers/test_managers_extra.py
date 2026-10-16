@@ -498,6 +498,7 @@ def test_systemd_admin_service_runs_gunicorn_with_idle_timeout(tmp_path: Path) -
     assert "KillMode=process" in service
     # Not PartOf the target - stopping the workload must not stop the admin.
     assert "PartOf=" not in service
+    assert "[Install]\nWantedBy=default.target" in service
 
 
 def test_systemd_target_excludes_admin(tmp_path: Path) -> None:
@@ -783,6 +784,26 @@ def test_an_idle_admin_socket_is_activated(tmp_path: Path, monkeypatch) -> None:
     calls = _admin_activation(tmp_path, monkeypatch, socket_active=False, service_changed=False, socket_changed=False)
 
     assert ["restart", "test-bench-admin.socket"] in calls
+
+
+def test_enable_admin_at_boot_enables_the_admin_service(tmp_path: Path, monkeypatch) -> None:
+    mgr = _make_systemd_manager(tmp_path)
+    calls: list[list[str]] = []
+    monkeypatch.setattr("pilot.managers.processes.systemd.run_command", lambda argv, **kwargs: calls.append(argv))
+
+    mgr.enable_admin_at_boot()
+
+    assert calls == [["systemctl", "--user", "enable", "test-bench-admin.service"]]
+
+
+def test_wake_admin_starts_the_admin_service_without_waiting(tmp_path: Path, monkeypatch) -> None:
+    mgr = _make_systemd_manager(tmp_path)
+    calls: list[list[str]] = []
+    monkeypatch.setattr("pilot.managers.processes.systemd.run_command", lambda argv, **kwargs: calls.append(argv))
+
+    mgr.wake_admin()
+
+    assert calls == [["systemctl", "--user", "start", "--no-block", "test-bench-admin.service"]]
 
 
 def test_supervisor_starts_again_after_a_reboot(tmp_path: Path, monkeypatch) -> None:

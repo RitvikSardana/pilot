@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import typing
 from pathlib import Path
 
@@ -67,9 +68,31 @@ class LogsConfigurator(SystemdUserMixin):
     def setup(self) -> None:
         if not is_linux():
             raise BenchError("Log shipping is only supported on linux based machines.")
-        if shutil.which("fluent-bit") is None:
+        if self.binary_path is None:
             get_package_manager().install("fluent-bit")
         self.state_dir.mkdir(parents=True, exist_ok=True)
+
+    def sync(self, config: TelemetryConfig) -> None:
+        """Ship logs whenever [telemetry] has a credential, as metrics do on each monitor tick.
+
+        Fluent Bit reads its token only at start, so a changed config or token restarts it.
+        """
+        if not config.is_shipping_logs or self.binary_path is None:
+            # In case it's still running remove it the config is gone.
+            if self.is_running:
+                self.remove()
+            return
+        if self.is_running and self._read_files() == self._render_files(config):
+            return
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.install(config)
+
+    @property
+    def is_running(self) -> bool:
+        result = subprocess.run(
+            self._systemctl("is-active", "--quiet", self.unit_name), env=self._systemctl_env()
+        )
+        return result.returncode == 0
 
     def install(self, config: TelemetryConfig) -> None:
         self._write_configs(config)
@@ -93,13 +116,13 @@ class LogsConfigurator(SystemdUserMixin):
 
     def _write_configs(self, config: TelemetryConfig) -> None:
         self.conf_dir.mkdir(parents=True, exist_ok=True)
-        self._write_conf(config)
-        (self.conf_dir / "parsers.conf").write_text(_PARSERS_CONF)
-        (self.conf_dir / "pilot.lua").write_text(_PILOT_LUA)
-        self._write_token(config.token)
+        files = self._render_files(config)
+        atomic_write_private_text(self.conf_dir / "token.env", files.pop("token.env"))
+        for name, text in files.items():
+            (self.conf_dir / name).write_text(text)
 
-    def _write_conf(self, config: TelemetryConfig) -> None:
-        rendered = _CONF_TEMPLATE.render(
+    def _render_files(self, config: TelemetryConfig) -> dict[str, str]:
+        conf = _CONF_TEMPLATE.render(
             cli_root=cli_root(),
             conf_dir=self.conf_dir,
             host=self._host(config.endpoint),
@@ -107,26 +130,29 @@ class LogsConfigurator(SystemdUserMixin):
             uri=LOGS_PATH,
             tls=config.endpoint.startswith("https://"),
         )
-        (self.conf_dir / "fluent-bit.conf").write_text(rendered)
+        return {
+            "fluent-bit.conf": conf,
+            "parsers.conf": _PARSERS_CONF,
+            "pilot.lua": _PILOT_LUA,
+            "token.env": f"DATUM_LOG_TOKEN={config.token}",
+        }
 
-    def _write_token(self, token: str) -> None:
-        atomic_write_private_text(self.conf_dir / "token.env", f"DATUM_LOG_TOKEN={token}")
+    def _read_files(self) -> dict[str, str]:
+        names = ("fluent-bit.conf", "parsers.conf", "pilot.lua", "token.env")
+        return {name: path.read_text() for name in names if (path := self.conf_dir / name).exists()}
 
     def _render_unit(self) -> str:
-        return UNIT_TEMPLATE.format(
-            cli_root=cli_root(),
-            fluent_bit=self._fluent_bit_binary,
-            conf_dir=self.conf_dir,
-        )
+        if not (binary := self.binary_path):
+            raise BenchError("fluent-bit binary not found. Install it before setting up log shipping.")
+        return UNIT_TEMPLATE.format(cli_root=cli_root(), fluent_bit=binary, conf_dir=self.conf_dir)
 
     @property
-    def _fluent_bit_binary(self) -> str:
+    def binary_path(self) -> str | None:
+        """fluent-bit on PATH, else where the official package installs it."""
         if found := shutil.which("fluent-bit"):
             return found
         default_path = Path("/opt/fluent-bit/bin/fluent-bit")
-        if default_path.exists():
-            return str(default_path)
-        raise BenchError("fluent-bit binary not found. Install it before setting up log shipping.")
+        return str(default_path) if default_path.exists() else None
 
     def _restart_service(self) -> None:
         env = self._systemctl_env()
@@ -145,4 +171,3 @@ class LogsConfigurator(SystemdUserMixin):
 
         parsed = urlparse(endpoint)
         return str(parsed.port or (443 if parsed.scheme == "https" else 80))
-

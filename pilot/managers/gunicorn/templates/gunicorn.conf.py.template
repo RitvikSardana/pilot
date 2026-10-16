@@ -4,6 +4,7 @@ threads = {{ threads }}
 worker_class = "{{ worker_class }}"
 timeout = {{ timeout }}
 preload_app = True
+control_socket_disable = True
 {% if max_requests > 0 %}
 max_requests = {{ max_requests }}
 max_requests_jitter = {{ max_requests_jitter }}

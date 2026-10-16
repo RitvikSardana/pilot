@@ -76,21 +76,30 @@ def exclude_disabled_apps(apps: list[str], bench_root: Path, site_name: str) -> 
 
 def query_disabled_apps_via_db(bench_root: Path, site_name: str) -> list[str]:
     """Read the site's disabled apps from Frappe's global setting."""
+    return _query_global_app_list(bench_root, site_name, "disabled_apps") or []
+
+
+def query_installed_apps_setting_via_db(bench_root: Path, site_name: str) -> list[str] | None:
+    """The installed apps Frappe committed in its global setting. None when unreadable."""
+    return _query_global_app_list(bench_root, site_name, "installed_apps")
+
+
+def _query_global_app_list(bench_root: Path, site_name: str, key: str) -> list[str] | None:
     rows = _query_site_database(
         bench_root,
         site_name,
         lambda database: (
             f"SELECT defvalue FROM {database.quote_identifier('tabDefaultValue')} "
-            "WHERE parent = '__global' AND defkey = 'disabled_apps'"
+            f"WHERE parent = '__global' AND defkey = '{key}'"
         ),
     )
     if not rows:
-        return []
+        return None
     try:
-        disabled = json.loads(str(rows[0][0]) or "[]")
+        apps = json.loads(str(rows[0][0]) or "[]")
     except json.JSONDecodeError:
-        return []
-    return [app for app in disabled if isinstance(app, str)] if isinstance(disabled, list) else []
+        return None
+    return [app for app in apps if isinstance(app, str)] if isinstance(apps, list) else None
 
 
 def has_app_disabling(bench_root: Path, site_name: str) -> bool:

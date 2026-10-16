@@ -66,7 +66,9 @@ def test_a_site_down_for_the_whole_window_alerts_once(tmp_path: Path) -> None:
     assert len(payloads) == 1
     assert payloads[0]["event"] == "site_down"
     assert payloads[0]["message"] == "my-bench: a.test unreachable"
-    assert payloads[0]["context"]["sites"] == [{"site": "a.test", "status_code": 502, "response_ms": 12}]
+    assert payloads[0]["context"]["sites"] == [
+        {"site": "a.test", "status_code": 502, "response_ms": 12, "error": None}
+    ]
 
 
 def test_only_the_sites_still_down_are_reported(tmp_path: Path) -> None:
@@ -187,3 +189,26 @@ def test_a_second_site_going_down_gets_its_own_record(tmp_path: Path) -> None:
 
     titles = sorted(item.title for item in monitor.bench.notifications.list(10))
     assert titles == ["a.test is unreachable", "b.test is unreachable"]
+
+
+def test_a_ping_without_an_http_answer_keeps_its_reason(tmp_path: Path) -> None:
+    import urllib.error
+
+    reason = "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError(reason)):
+        result = _monitor(tmp_path).ping_site("a.test")
+
+    assert result["up"] is False
+    assert result["status_code"] is None
+    assert result["error"] == reason
+
+
+def test_an_http_failure_has_no_extra_error_field(tmp_path: Path) -> None:
+    import urllib.error
+
+    failure = urllib.error.HTTPError("https://a.test/api/method/ping", 502, "Bad Gateway", {}, None)
+    with patch("urllib.request.urlopen", side_effect=failure):
+        result = _monitor(tmp_path).ping_site("a.test")
+
+    assert result["status_code"] == 502
+    assert "error" not in result

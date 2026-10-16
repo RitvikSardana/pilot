@@ -48,12 +48,8 @@ class SetupTelemetryCommand(Command):
             )
             return
 
-        from pilot.core.server.monitoring_datum import HAS_DATUM_CLIENT
-
         if not telemetry.is_shipping_metrics:
             self.report("Metrics are off.")
-        elif not HAS_DATUM_CLIENT:
-            self.report("Metrics stay in local logs: the Datum client (Pilot's 'metrics' extra) is not installed.")
         else:
             self.report(f"Metrics will ship to {telemetry.endpoint}.")
         if not telemetry.is_shipping_logs:

@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pilot.exceptions import BenchError
+from pilot.exceptions import BenchError, CronError
 from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text_locked
 from pilot.utils import normalize_host
 
@@ -66,6 +66,10 @@ class SiteRename:
         # Revocation can commit before its durability sync reports failure. The rename
         # must stay committed once this starts, or rollback could restore a dead token.
         self._revoke_old_pilot_auth_token()
+        try:
+            self.bench.site(self.new_name).backups.move_schedule(self.old_name)
+        except CronError as error:
+            on_progress(f"Could not move the backup schedule to the new name: {error}")
         # Release the old route only after nginx has switched.
         if not self.keep_old_hostname:
             self._release_route(self.old_name)

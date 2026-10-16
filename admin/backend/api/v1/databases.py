@@ -18,6 +18,7 @@ from pilot.exceptions import DatabaseError, TaskConflictError
 from pilot.tasks.restart_database import RestartDatabaseTask
 from pilot.tasks.set_innodb_buffer_pool_size import SetInnoDBBufferPoolSizeTask
 from pilot.tasks.set_mariadb_configuration import SetMariaDBConfigurationTask
+from pilot.tasks.set_mariadb_memory_share import SetMariaDBMemoryShareTask
 from pilot.tasks.set_max_database_connections import SetMaxDatabaseConnectionsTask
 from pilot.tasks.set_performance_schema import SetPerformanceSchemaTask
 
@@ -381,6 +382,36 @@ def set_max_connections():
             "Could not queue the Max DB Connections change.",
             500,
         )
+
+
+@database_bp.post("/quick-actions/memory-share")
+def set_memory_share():
+    forbidden = guard_bench_management()
+    if forbidden is not None:
+        return forbidden
+
+    data = request.get_json(silent=True)
+    memory_share = data.get("memory_share") if isinstance(data, dict) else None
+    if type(memory_share) not in (int, float):
+        return error_response("invalid_memory_share", "memory_share must be a number.", 422)
+
+    try:
+        actions = _quick_actions()
+        actions.require_memory_share(memory_share)
+        bench = _bench()
+        task_id = SetMariaDBMemoryShareTask.queue(
+            bench,
+            memory_share=float(memory_share),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            resource_key=_DATABASE_RESOURCE_KEY,
+        )
+        return accepted_task_response(bench.path, task_id)
+    except (DatabaseError, TaskConflictError) as exc:
+        return error_response("database_action_unavailable", str(exc), 409)
+    except ValueError as exc:
+        return error_response("invalid_memory_share", str(exc), 422)
+    except Exception:
+        return error_response("database_action_failed", "Could not queue the memory split change.", 500)
 
 
 @database_bp.get("/processlist")

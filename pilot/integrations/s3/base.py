@@ -218,12 +218,16 @@ class S3:
             ) from error
 
     def list_objects(self, bucket_name: str, prefix: str) -> list[str]:
+        return list(self.get_object_sizes(bucket_name, prefix))
+
+    def get_object_sizes(self, bucket_name: str, prefix: str) -> dict[str, int]:
+        """Size in bytes of each object under `prefix`, keyed by object key."""
         try:
             paginator = self.client.get_paginator("list_objects_v2")
-            keys: list[str] = []
+            sizes: dict[str, int] = {}
             for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
-                keys.extend(obj["Key"] for obj in page.get("Contents", []))
-            return keys
+                sizes.update((obj["Key"], obj["Size"]) for obj in page.get("Contents", []))
+            return sizes
         except ClientError as error:
             raise S3IntegrationError(
                 f"Failed to list '{bucket_name}/{prefix}': {error.response['Error'].get('Message', error)}",

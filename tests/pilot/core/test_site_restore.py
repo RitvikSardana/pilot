@@ -120,6 +120,11 @@ def _source_config(tmp_path: Path) -> Path:
         "pilot_auth_token": "source-token",
         "maintenance_mode": 1,
         "email_sender_name": "Source",
+        "domains": ["shop.source.example.com"],
+        "route": {"provider": "atlas"},
+        "ssl": True,
+        "cert_name": "source.example.com",
+        "backup_retention": {"scheme": "simple"},
     }
     config.write_text(json.dumps(source_config))
     return config

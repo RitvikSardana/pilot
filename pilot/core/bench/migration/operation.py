@@ -35,6 +35,7 @@ _CHAIN_TASKS = {
     "revert-site": "pilot.tasks.revert_site.RevertSiteTask",
     "restart-services": "pilot.tasks.restart_services.RestartServicesTask",
 }
+_CHAIN_PHASES = ("backing_up", "updating", "migrating")
 
 
 def _now() -> str:
@@ -55,6 +56,7 @@ class AppRevision:
     target_sha: str | None = None  # ref (commit or tag) captured at create time; None when unresolved
     target_kind: Literal["tag", "commit"] = "commit"  # how to check target_sha out
     branch: str = ""  # branch to return to on revert, set when a branch switch changed it
+    has_migrate_changes: bool = True
 
     @property
     def compare_url(self) -> str | None:
@@ -255,6 +257,44 @@ class MigrationOperation:
             self._save()
         if self.next_migrate_site() is None:
             self._complete(on_step)
+
+    def fail_stopped_step(self, task_id: str, phase: str, site_name: str | None) -> None:
+        """Pause for the user when a chain task stopped without its failure handling. A no-op
+        once the chain moved on."""
+        if self.chain[-1]["task_id"] != task_id or self.state not in _CHAIN_PHASES:
+            return
+        if self.state != phase or self._is_step_done(phase, site_name):
+            # The step finished, but the task stopped before it queued the next task.
+            phase, site_name = str(self.state), None
+        elif site_name:
+            self._fail_site_step(phase, site_name)
+        self.diagnosis = {
+            "phase": phase,
+            "message": "The task stopped before it finished. Retry it, or revert.",
+            "output_excerpt": "",
+        }
+        self._enter_needs_attention(phase, site_name)
+        if phase == "backing_up":
+            self._restore_maintenance()
+
+    def _fail_site_step(self, phase: str, site_name: str) -> None:
+        site = self.site(site_name)
+        if phase == "backing_up":
+            site.backup_status = "failed"
+        elif phase == "migrating":
+            site.migration_status = "failed"
+            # A revert must restore what the stopped attempt touched too.
+            self._union_touched_tables(site)
+
+    def _is_step_done(self, phase: str, site_name: str | None) -> bool:
+        if phase == "updating":
+            return self.apps_updated
+        if not site_name:
+            return False
+        site = self.site(site_name)
+        if phase == "backing_up":
+            return site.backup_status == "backed_up"
+        return site.migration_status == "success"
 
     def retry(self) -> None:
         """Resume the chain from needs_attention so the failed unit runs again."""

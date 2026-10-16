@@ -323,6 +323,27 @@ class Bench:
         """Where realtime answers. Lite serves it from the web process."""
         return self.config.http_port if self.is_lite_mode else self.config.socketio_port
 
+    @property
+    def realtime_socket(self) -> Path | None:
+        """The Unix socket production realtime listens on, or None where it uses its TCP port."""
+        socket = self.realtime_socket_path
+        node_utils = self.apps_path / "frappe" / "node_utils.js"
+        if socket is None or not node_utils.exists() or "FRAPPE_SOCKETIO_UDS" not in node_utils.read_text():
+            return None
+        return socket
+
+    @property
+    def realtime_socket_path(self) -> Path | None:
+        """Where production realtime listens when Frappe supports a Unix socket. None for lite
+        mode, the Python backend and supervisor."""
+        if self.is_lite_mode or self.config.socketio_backend != "node":
+            return None
+        if self.config.production.process_manager != "systemd":
+            return None
+        socket = self.config_path / "socketio.sock"
+        # The kernel caps a Unix socket path at 108 bytes.
+        return socket if len(bytes(socket)) < 108 else None
+
     def enforce_lite_mode_rules(self) -> bool:
         """Reconcile bench.toml with what lite mode can actually do here."""
         if not self.config.lite_mode.enabled:

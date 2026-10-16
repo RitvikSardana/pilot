@@ -23,6 +23,7 @@ _BASE_DATA: dict = {
 
 def _provisioner(tmp_path: Path) -> SiteProvisioner:
     bench = Bench(BenchConfig._from_dict(_BASE_DATA), tmp_path)
+    bench.config.letsencrypt.email = "ops@example.com"
     return SiteProvisioner(bench, "site1.example.com", ["frappe"], "admin", "mariadb")
 
 
@@ -38,10 +39,40 @@ def test_obtain_cert_never_regenerates_without_ssl(tmp_path: Path) -> None:
         _provisioner(tmp_path).obtain_cert(site, lambda _: None)
 
     manager = mock_nginx.return_value
-    ssl_ready_flags = [call.kwargs["ssl_ready"] for call in manager.generate_config.call_args_list]
-    assert ssl_ready_flags == [True]
+    manager.generate_config.assert_not_called()
     mock_letsencrypt.return_value.obtain.assert_called_once_with(site.config)
-    manager.reload.assert_called_once()
+    manager.apply_config.assert_called_once_with()
+
+
+def test_a_failed_certificate_keeps_the_new_site_on_http(tmp_path: Path) -> None:
+    from pilot.exceptions import CommandError
+
+    site = MagicMock()
+    site.config = SiteConfig(name="site1.example.com", apps=["frappe"])
+    messages: list[str] = []
+
+    with (
+        patch("pilot.managers.nginx.NginxManager") as mock_nginx,
+        patch("pilot.managers.letsencrypt.LetsEncryptManager") as mock_letsencrypt,
+    ):
+        mock_letsencrypt.return_value.obtain.side_effect = CommandError("DNS problem")
+        _provisioner(tmp_path).obtain_cert(site, messages.append)
+
+    assert [call.args for call in site.set_ssl.call_args_list] == [(True,), (False,)]
+    mock_nginx.return_value.generate_config.assert_not_called()
+    assert "stays on HTTP" in messages[-1]
+
+
+def test_no_certificate_email_keeps_the_new_site_on_http(tmp_path: Path) -> None:
+    provisioner = _provisioner(tmp_path)
+    provisioner.bench.config.letsencrypt.email = ""
+    site = MagicMock()
+
+    with patch("pilot.managers.letsencrypt.LetsEncryptManager") as mock_letsencrypt:
+        provisioner.obtain_cert(site, lambda _: None)
+
+    site.set_ssl.assert_not_called()
+    mock_letsencrypt.return_value.obtain.assert_not_called()
 
 
 def test_edge_tls_site_sets_ssl_without_obtaining_a_certificate(tmp_path: Path) -> None:

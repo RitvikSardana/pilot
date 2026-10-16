@@ -55,3 +55,20 @@ def test_tls_task_applies_email_and_site_flag_before_certificate_setup(tmp_path:
     run.assert_called_once_with()
     assert json.loads(config_path.read_text())["ssl"] is True
     assert BenchConfig.read(tmp_path).letsencrypt.email == "ops@example.com"
+
+
+def test_tls_task_fails_when_the_site_still_has_no_certificate(tmp_path: Path) -> None:
+    task = _task(tmp_path, production=False, email="ops@example.com")
+    public_site = tmp_path / "sites" / "secure.example.com"
+    public_site.mkdir(parents=True)
+    (public_site / "site_config.json").write_text(json.dumps({"ssl": False}))
+    task.site = "secure.example.com"
+
+    with (
+        patch("pilot.core.bench.Bench.setup_letsencrypt"),
+        patch.object(NginxManager, "serviceable_tls_domains", return_value=[]),
+        pytest.raises(BenchError, match=r"No certificate covers secure\.example\.com"),
+    ):
+        task.run()
+
+    assert task.disable_site_ssl() == {"site": "secure.example.com"}

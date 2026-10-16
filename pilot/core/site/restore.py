@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
+from pilot.core.site.config import PROTECTED_CONFIG_KEYS
 from pilot.exceptions import BenchError
 from pilot.utils import run_command
 
@@ -19,11 +20,14 @@ if TYPE_CHECKING:
 RESTORE_PARTS = ("database", "public", "private", "config")
 # The end of tar's error output says why it failed.
 _STDERR_TAIL_BYTES = 4096
-# Keys that tie a config to its own database, cache, host or Pilot, so they stay as this site has them.
+# Keys that belong to this site's own database, cache, domains, host or Pilot.
 LOCAL_CONFIG_PREFIXES = ("db_", "redis_", "pilot_", "atlas_")
-LOCAL_CONFIG_KEYS = frozenset(
-    {"rds_db", "host_name", "installed_apps", "maintenance_mode", "pause_scheduler", "email_sender_name"}
-)
+LOCAL_CONFIG_KEYS = PROTECTED_CONFIG_KEYS | {
+    "rds_db",
+    "maintenance_mode",
+    "pause_scheduler",
+    "email_sender_name",
+}
 
 
 def backup_part(filename: str) -> str | None:

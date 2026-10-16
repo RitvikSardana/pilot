@@ -147,6 +147,7 @@ def test_gunicorn_manager_generates_admin_config(tmp_path: Path) -> None:
     assert 'worker_class = "gthread"' in content
     # No preload so create_app (and its idle watchdog) runs in the worker.
     assert "preload_app = False" in content
+    assert "control_socket_disable = True" in content
 
 
 def test_gunicorn_manager_bind_uses_bench_http_port(tmp_path: Path) -> None:

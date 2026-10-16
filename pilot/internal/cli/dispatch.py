@@ -4,6 +4,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from itertools import dropwhile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,7 +14,9 @@ from pilot.utils import cli_root
 if TYPE_CHECKING:
     from pilot.core.bench import Bench
 
-_OWN_GROUP_OPTIONS = frozenset(["--verbose", "--yes", "-y", "--bench", "-b", "--help", "-h"])
+_OWN_GROUP_OPTIONS = frozenset(["--verbose", "--yes", "-y", "--bench", "-b", "--help", "-h", "--version"])
+# Pilot flags given before a Frappe command; Frappe commands may take their own --yes after it.
+_PILOT_ONLY_FLAGS = frozenset(["--verbose", "--yes", "-y"])
 
 
 @dataclass(frozen=True)
@@ -180,7 +183,7 @@ def forwarded_frappe_args(remaining: list[str]) -> list[str] | None:
     if remaining and remaining[0] == "frappe":
         return remaining[1:]
     if is_frappe_passthrough(remaining):
-        return remaining
+        return list(dropwhile(lambda arg: arg in _PILOT_ONLY_FLAGS, remaining))
     return None
 
 

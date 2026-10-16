@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 from pilot.config import BenchConfig
 
@@ -306,3 +306,22 @@ def test_backup_schedule_reports_missing_cron(tmp_path: Path) -> None:
     error = response.get_json()["error"]
     assert error["code"] == "cron_unavailable"
     assert "Install cron" in error["message"]
+
+
+def test_list_backups_reports_the_size_of_an_uploaded_file(tmp_path: Path) -> None:
+    """The local copy is gone after upload, so the size comes from the bucket."""
+    bench_root = tmp_path / "benches" / "current"
+    _make_site(bench_root, "site.localhost")
+    client = _client(bench_root)
+    offsite = Mock()
+    offsite.list_backups.return_value = {"20240101_000000": {"database": "20240101_000000-database.sql.gz"}}
+    offsite.get_file_sizes.return_value = {"20240101_000000-database.sql.gz": 2048}
+
+    with (
+        patch("pilot.config.s3.S3Config.is_configured", new_callable=PropertyMock, return_value=True),
+        patch("pilot.integrations.s3.backups.OffsiteBackup.from_config", return_value=offsite),
+    ):
+        response = client.get("/api/v1/sites/site.localhost/backups")
+
+    assert response.get_json()[0]["files"][0]["size_bytes"] == 2048
+    offsite.get_file_sizes.assert_called_once_with("site.localhost", "20240101_000000")

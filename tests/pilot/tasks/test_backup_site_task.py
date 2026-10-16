@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -68,4 +69,6 @@ def test_backup_is_written_outside_private_backups(tmp_path, monkeypatch) -> Non
     with pytest.raises(SystemExit):
         task.run()
 
-    assert calls[0][-2:] == ["--backup-path", str(bench.sites_path / "site1" / "backups")]
+    backup_path = Path(calls[0][calls[0].index("--backup-path") + 1])
+    assert backup_path.parent == bench.sites_path / "site1" / "backups"
+    assert not backup_path.exists()

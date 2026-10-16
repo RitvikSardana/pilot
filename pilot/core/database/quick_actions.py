@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pilot.config.mariadb import MEMORY_SHARE_RANGE
+from pilot.core.mariadb_memory import calculate_mariadb_memory
 from pilot.exceptions import DatabaseError
 from pilot.managers.database.mariadb import MariaDBManager
 from pilot.managers.platform import is_linux
@@ -16,6 +19,7 @@ _SQLITE_HAS_NO_SERVER = "SQLite does not have a shared database server."
 _MANAGEMENT_DISABLED = "Bench management is disabled on this server."
 _UNREACHABLE = "MariaDB is not reachable with Pilot's admin credentials."
 _EXTERNAL_MARIADB = "Database actions are available only for Pilot-managed MariaDB instances."
+_MEMORY_SHARE_STEP = 0.05
 
 RestartExecutor = Callable[[Callable[[], None]], None]
 
@@ -50,6 +54,7 @@ class DatabaseQuickActions:
         configuration = self._configuration_capability(reachable, server_reason)
         innodb_buffer_pool = self._innodb_buffer_pool_capability(configuration)
         max_connections = self._max_connections_capability(configuration)
+        memory_share = self._memory_share_capability(configuration)
         manage_binlogs = self._capability(
             not server_reason and reachable,
             server_reason or ("" if reachable else _UNREACHABLE),
@@ -63,6 +68,7 @@ class DatabaseQuickActions:
                 "performance_schema": performance,
                 "innodb_buffer_pool_size": innodb_buffer_pool,
                 "max_connections": max_connections,
+                "memory_share": memory_share,
                 "manage_binlogs": manage_binlogs,
             },
         }
@@ -88,6 +94,24 @@ class DatabaseQuickActions:
     def set_max_connections(self, max_connections: int) -> bool:
         self.require_max_connections(max_connections)
         return self._manager().set_max_connections(max_connections)
+
+    def set_memory_share(self, memory_share: float, benches_root: Path) -> None:
+        """Save the database's share of host memory for every bench and size MariaDB for it."""
+        from pilot.config.common import CommonConfig
+
+        self.require_memory_share(memory_share)
+        manager = self._manager()
+        with manager.database_action_lock():
+            self.config.mariadb.memory_share = memory_share
+            manager.tune_to_host_locked()
+            with CommonConfig.open(benches_root) as common:
+                common.mariadb.memory_share = memory_share
+
+    def require_memory_share(self, memory_share: float) -> dict:
+        low, high = MEMORY_SHARE_RANGE
+        if type(memory_share) not in (int, float) or not low <= memory_share <= high:
+            raise ValueError(f"memory_share must be between {low} and {high}.")
+        return self._require_available(self._configuration_capability())
 
     def require_restart(self) -> dict:
         return self._require_available(self._restart_capability())
@@ -247,6 +271,34 @@ class DatabaseQuickActions:
             "requires_restart": False,
         }
 
+    def _memory_share_capability(self, configuration: dict | None = None) -> dict:
+        configuration = configuration or self._configuration_capability()
+        if not configuration["available"]:
+            return self._unavailable_memory_share(configuration["reason"])
+        total_mb = self._manager().host_memory_mb
+        low, high = MEMORY_SHARE_RANGE
+        steps = []
+        # The sizing each share gives, so a client never repeats the formula.
+        for index in range(round((high - low) / _MEMORY_SHARE_STEP) + 1):
+            share = round(low + index * _MEMORY_SHARE_STEP, 2)
+            sizing = calculate_mariadb_memory(total_mb, share)
+            steps.append(
+                {
+                    "share": share,
+                    "innodb_buffer_pool_mb": sizing.innodb_buffer_pool_mb,
+                    "memory_max_mb": sizing.memory_max_mb,
+                }
+            )
+        return {
+            **self._capability(True),
+            "current": self.config.mariadb.memory_share,
+            "min": low,
+            "max": high,
+            "total_memory_mb": total_mb,
+            "steps": steps,
+            "requires_restart": False,
+        }
+
     def _managed_server_reason(self) -> str:
         if self.config.mariadb.existing:
             return ""
@@ -279,6 +331,7 @@ class DatabaseQuickActions:
                 },
                 "innodb_buffer_pool_size": self._unavailable_innodb_buffer_pool(reason),
                 "max_connections": self._unavailable_max_connections(reason),
+                "memory_share": self._unavailable_memory_share(reason),
                 "manage_binlogs": unavailable,
             },
         }
@@ -313,6 +366,18 @@ class DatabaseQuickActions:
             "min": None,
             "max": None,
             "recommended": None,
+            "requires_restart": False,
+        }
+
+    @classmethod
+    def _unavailable_memory_share(cls, reason: str) -> dict:
+        return {
+            **cls._capability(False, reason),
+            "current": None,
+            "min": None,
+            "max": None,
+            "total_memory_mb": None,
+            "steps": [],
             "requires_restart": False,
         }
 

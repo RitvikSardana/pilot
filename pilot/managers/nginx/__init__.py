@@ -5,13 +5,17 @@ import logging
 import pwd
 import re
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from fnmatch import fnmatch
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from pilot.config.proxy import CLOUDFLARE_NETWORKS
 from pilot.config.waf import parse_nginx_size
 from pilot.exceptions import CommandError
+from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text_locked
 from pilot.internal.template import Template
 from pilot.managers.gunicorn import GunicornManager
 from pilot.managers.nginx.waf_render import ModSecurityRenderer
@@ -173,10 +177,15 @@ class NginxConfigRenderer:
             return None
 
         site, tls_domains = entry
-        scheme = "https" if mapping.target in tls_domains else "http"
+        # Redirect to the domain the site calls home, on the scheme clients reach it with.
+        target = site.primary
+        if site.configured_route_for(target):
+            scheme = site.route_for(target).public_scheme
+        else:
+            scheme = "https" if target in tls_domains else "http"
         return SimpleNamespace(
             server_name=vm_hostname_pattern(mapping.pattern),
-            redirect=f"{scheme}://{mapping.target}" if mapping.redirect else "",
+            redirect=f"{scheme}://{target}" if mapping.redirect else "",
             proxy_pass=f"http://bench-{self.bench.config.name}",
             site=site.name,
             public_root=f"{self.bench.path}/sites/{site.name}/public",
@@ -192,8 +201,7 @@ class NginxConfigRenderer:
             error_codes=list(ERROR_PAGES),
         )
 
-    @property
-    def _proxy_servers(self) -> list[str]:
+    def get_proxy_servers(self) -> list[str]:
         """Edge-proxy IPs in front of this bench, if any; looked up once."""
         if self._proxy_servers_cache is None:
             from pilot.core.adapters.domain_provider import DomainRouteProvider
@@ -216,7 +224,7 @@ class NginxConfigRenderer:
                 "proxy_protocol_v2"
                 if ssl and self.bench.config.proxy.protocol_v2
                 else "x_forwarded_for"
-                if self._proxy_servers
+                if self.get_proxy_servers()
                 else "direct"
             )
             public_scheme = route.public_scheme if route else self._unrouted_scheme(client_ip_source)
@@ -271,7 +279,7 @@ class NginxConfigRenderer:
             "proxy_protocol_v2"
             if ssl and self.bench.config.proxy.protocol_v2
             else "x_forwarded_for"
-            if self._proxy_servers
+            if self.get_proxy_servers()
             else "direct"
         )
         client_ip_source = route.client_ip_source if admin.route else legacy_source
@@ -309,13 +317,18 @@ class NginxConfigRenderer:
             "admin_client_max_body_size": max(
                 nginx.client_max_body_size, ADMIN_CLIENT_MAX_BODY_SIZE, key=parse_nginx_size
             ),
-            "socketio_port": self.bench.realtime_port,
+            "realtime_socket": (socket := self.bench.realtime_socket_path),
+            "realtime_port": self.bench.realtime_port,
+            "socketio_upstream": (
+                f"http://realtime-{config.name}" if socket else f"http://127.0.0.1:{self.bench.realtime_port}"
+            ),
             "sites_root": f"{self.bench.path}/sites",
             "logs_path": str(self.bench.logs_path),
             "acme_root": config.letsencrypt.webroot_path,
             "error_dir": self.bench.config_path / "nginx" / "error_pages",
             "error_codes": list(ERROR_PAGES),
-            "proxy_servers": self._proxy_servers,
+            "proxy_servers": self.get_proxy_servers(),
+            "cloudflare_networks": CLOUDFLARE_NETWORKS if config.proxy.cloudflare else (),
             "proxy_gate_variable": "$bench_"
             + re.sub(r"[^a-zA-Z0-9_]", "_", config.name)
             + "_from_proxy",
@@ -337,6 +350,8 @@ class NginxManager:
         self.bench = bench
         self._renderer = NginxConfigRenderer(bench)
         self._modsec = ModSecurityRenderer(bench)
+        # (content before, content written) of each config file, until `nginx -t` accepts the set.
+        self._unvalidated: dict[Path, tuple[str | None, str]] = {}
 
     def is_installed(self) -> bool:
         return which("nginx") is not None
@@ -382,15 +397,49 @@ class NginxManager:
             (site.config, self.serviceable_tls_domains(site.config, ssl_ready)) for site in self.bench.sites()
         ]
         admin_ssl = self.bench.config.admin.tls and ssl_ready and self.has_admin_cert
-        (nginx_dir / "include.conf").write_text(self._renderer.generate_bench_config(sites, admin_ssl))
+        self._write_config_file(nginx_dir / "include.conf", self._renderer.generate_bench_config(sites, admin_ssl))
+
+    @contextmanager
+    def config_lock(self) -> Iterator[None]:
+        """Serialize nginx config changes across benches, from the first write to the reload.
+        Every bench shares one nginx, so `nginx -t` must not see another bench's untested files."""
+        from pilot.utils import benches_dir
+
+        benches_dir().mkdir(parents=True, exist_ok=True)
+        with exclusive_file_lock(benches_dir() / "nginx"):
+            yield
+
+    @contextmanager
+    def _render_lock(self) -> Iterator[None]:
+        # The domain provider is a subprocess, so ask it before every bench waits on the lock.
+        # Removing a bench's routes renders nothing, so it never depends on the provider.
+        self._renderer.get_proxy_servers()
+        with self.config_lock():
+            yield
+
+    def write_config(self, ssl_ready: bool = False) -> None:
+        """Write this bench's config without a reload; the next reload tests it."""
+        with self._render_lock():
+            self.generate_config(ssl_ready=ssl_ready)
+
+    def apply_config(self, ssl_ready: bool = True) -> None:
+        """Write this bench's config, test it and reload nginx, or put the old files back."""
+        with self._render_lock():
+            self.generate_config(ssl_ready=ssl_ready)
+            self.reload()
+
+    def publish_config(self, ssl_ready: bool = False) -> None:
+        """Write this bench's config and include it in nginx, then test and reload."""
+        with self._render_lock():
+            self.generate_config(ssl_ready=ssl_ready)
+            self.install_config()
 
     def reload_for_site_change(self) -> None:
         if not self.bench.config.production.enabled or not self.is_installed():
             return
         print("Updating nginx configuration...")
         sys.stdout.flush()
-        self.generate_config(ssl_ready=True)
-        self.reload()
+        self.apply_config()
 
     def _write_error_pages(self, nginx_dir: Path) -> None:
         error_dir = nginx_dir / "error_pages"
@@ -444,11 +493,32 @@ class NginxManager:
         modsec_dir = self._modsec.modsec_dir()
         modsec_dir.mkdir(parents=True, exist_ok=True)
         (self.bench.path / "logs").mkdir(exist_ok=True)
-        (modsec_dir / "modsecurity.conf").write_text(self._modsec.render_engine(waf))
-        (modsec_dir / "overrides.conf").write_text(self._modsec.render_overrides(waf))
-        (modsec_dir / "custom_rules.conf").write_text(self._modsec.render_custom_rules(waf))
-        (modsec_dir / "exclusions.conf").write_text(self._modsec.render_exclusions(waf))
-        (modsec_dir / "main.conf").write_text(self._modsec.render_main(modsec_dir))
+        self._write_config_file(modsec_dir / "modsecurity.conf", self._modsec.render_engine(waf))
+        self._write_config_file(modsec_dir / "overrides.conf", self._modsec.render_overrides(waf))
+        self._write_config_file(modsec_dir / "custom_rules.conf", self._modsec.render_custom_rules(waf))
+        self._write_config_file(modsec_dir / "exclusions.conf", self._modsec.render_exclusions(waf))
+        self._write_config_file(modsec_dir / "main.conf", self._modsec.render_main(modsec_dir))
+
+    def _write_config_file(self, path: Path, content: str) -> None:
+        with exclusive_file_lock(path):
+            if path in self._unvalidated:
+                previous = self._unvalidated[path][0]
+            else:
+                previous = path.read_text() if path.exists() else None
+            self._unvalidated[path] = (previous, content)
+            replace_private_text_locked(path, content)
+
+    def _restore_unvalidated(self) -> None:
+        """Put back the files nginx rejected, except a file that another operation rewrote since."""
+        for path, (previous, written) in self._unvalidated.items():
+            with exclusive_file_lock(path):
+                if (path.read_text() if path.exists() else None) != written:
+                    continue
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    replace_private_text_locked(path, previous)
+        self._unvalidated.clear()
 
     @property
     def config_dir(self) -> Path:
@@ -541,17 +611,19 @@ class NginxManager:
                 run_command(_privileged(["unlink", str(entry)]))
 
     def _reload_or_rollback(self, symlink_path: Path) -> None:
-        """Unpublish this bench if reload fails, then re-raise."""
+        """Reload, or unpublish this bench when no config is left for it, then re-raise."""
         try:
             self.reload()
         except Exception:
-            self._unpublish(symlink_path)
+            if not self.include_path.exists():
+                self._unpublish(symlink_path)
             raise
 
     def _unpublish(self, symlink_path: Path) -> None:
         """Take this bench's vhost out of nginx's view, however it got there."""
         if self.has_shared_include:
-            self.include_path.rename(self.include_path.with_name("include.conf.broken"))
+            if self.include_path.exists():
+                self.include_path.rename(self.include_path.with_name("include.conf.broken"))
         elif symlink_path.exists() or symlink_path.is_symlink():
             run_command(_privileged(["unlink", str(symlink_path)]))
 
@@ -570,11 +642,17 @@ class NginxManager:
 
     def uninstall_config(self) -> None:
         """Take this bench's vhost out of nginx and reload. Certs are kept."""
-        self._unpublish(self.config_dir / f"{self.bench.config.name}.conf")
-        self.reload()
+        with self.config_lock():
+            self._unpublish(self.config_dir / f"{self.bench.config.name}.conf")
+            self.reload()
 
     def reload(self) -> None:
-        run_command(_privileged(["nginx", "-t"]), timeout=10)
+        try:
+            run_command(_privileged(["nginx", "-t"]), timeout=10)
+        except CommandError:
+            self._restore_unvalidated()
+            raise
+        self._unvalidated.clear()
         if not is_linux():
             run_command(["nginx", "-s", "reload"])
             return

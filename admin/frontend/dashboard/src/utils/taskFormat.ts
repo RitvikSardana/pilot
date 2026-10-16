@@ -68,6 +68,7 @@ const COMMAND_LABELS: Record<string, string> = {
   'wizard-setup': 'Wizard Setup',
   'update-cli': 'Update CLI',
   'fetch-all-app-updates': 'Fetch App Updates',
+  'set-mariadb-memory-share': 'Set Memory Split',
 }
 
 // Ordered: the dropdown renders in this order.
@@ -162,6 +163,8 @@ const SITE_ARG_KEY: Record<string, string> = {
   'reinstall-site': 'site',
   'rename-site': 'site',
   'restore-site': 'site',
+  'revert-site': 'site',
+  'setup-letsencrypt': 'site',
   build: 'site',
   'new-site': 'name',
   'new-site-from-backup': 'name',

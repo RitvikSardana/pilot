@@ -41,6 +41,9 @@ class GunicornManager:
             # admin.backend.draining closes them when the stop begins.
             f"graceful_timeout = 30\n"
             f"preload_app = False\n"
+            # gunicorn 26 opens a control socket at one fixed path per user, which every
+            # bench's master would share. Pilot does not use it; older gunicorn ignores this.
+            f"control_socket_disable = True\n"
         )
 
     def _render_config(self) -> str:

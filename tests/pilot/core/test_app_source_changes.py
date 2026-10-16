@@ -77,3 +77,42 @@ def test_an_app_with_a_frappe_ui_page_has_page_islands(app: App) -> None:
     (page / "board.island.js").write_text("export default {}")
 
     assert app.has_page_islands is True
+
+
+def test_a_failed_build_leaves_its_lockfiles_and_they_do_not_count(app: App) -> None:
+    with pytest.raises(RuntimeError), app.record_lockfiles_on_failure():
+        (app.path / "yarn.lock").write_text("rewritten by yarn install")
+        (app.path / "frontend/yarn.lock").write_text("created by yarn install")
+        raise RuntimeError("build ran out of memory")
+
+    assert (app.path / "yarn.lock").read_text() == "rewritten by yarn install"
+    assert (app.path / "frontend/yarn.lock").read_text() == "created by yarn install"
+    assert app.has_source_changes is False
+
+
+def test_an_edit_after_a_failed_build_counts_again(app: App) -> None:
+    with pytest.raises(RuntimeError), app.record_lockfiles_on_failure():
+        (app.path / "yarn.lock").write_text("rewritten by yarn install")
+        raise RuntimeError("build failed")
+
+    (app.path / "yarn.lock").write_text("edited by a developer")
+
+    assert app.has_source_changes is True
+
+
+def test_a_lockfile_edit_made_before_a_failed_build_still_counts(app: App) -> None:
+    (app.path / "yarn.lock").write_text("edited by a developer")
+
+    with pytest.raises(RuntimeError), app.record_lockfiles_on_failure():
+        raise RuntimeError("build failed")
+
+    assert app.failed_build_lockfiles == {}
+    assert app.has_source_changes is True
+
+
+def test_a_successful_build_records_nothing(app: App) -> None:
+    with app.record_lockfiles_on_failure():
+        (app.path / "yarn.lock").write_text("updated")
+
+    assert app.failed_build_lockfiles == {}
+    assert app.has_source_changes is True

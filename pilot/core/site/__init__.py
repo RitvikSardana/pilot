@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pilot.config import SiteConfig
+from pilot.exceptions import CronError
+from pilot.managers.cron import CronManager
 from pilot.utils import run_command
 
 if TYPE_CHECKING:
@@ -217,17 +219,21 @@ class Site:
     def build_assets(self) -> None:
         """Rebuild the assets of the apps this site runs. Assets are shared by every
         site on the bench that has those apps."""
-        self.bench.rebuild_assets(apps=self.active_apps(), force=True)
+        bench_apps = {app.config.name for app in self.bench.apps()}
+        self.bench.rebuild_assets(
+            apps=[name for name in self.active_apps() if name in bench_apps], force=True
+        )
 
     def uninstall_apps(
         self,
         app_names: list[str],
         force: bool = False,
         on_progress: Callable[[str], None] = lambda message: None,
+        remove_from_bench: bool = True,
     ) -> None:
         from pilot.core.site.apps import SiteApps
 
-        SiteApps(self).uninstall_apps(app_names, force, on_progress)
+        SiteApps(self).uninstall_apps(app_names, force, on_progress, remove_from_bench)
 
     def _remove_app_if_not_on_any_site(self, app_name: str, on_progress: Callable[[str], None]) -> None:
         from pilot.core.site.apps import SiteApps
@@ -238,17 +244,29 @@ class Site:
         self,
         on_progress: Callable[[str], None] = lambda message: None,
         no_backup: bool = False,
+        force: bool = False,
+        archived_sites_path: str | None = None,
     ) -> None:
         from pilot.core.site.commands import SiteCommands
         from pilot.managers.nginx import NginxManager
 
         provider_domains = self._provider_domains()
-        cmd = [*self.bench.frappe_call, "frappe", "drop-site", "--force", self.config.name]
+        cmd = [*self.bench.frappe_call, "frappe", "drop-site", self.config.name]
         if no_backup:
             cmd.append("--no-backup")
+        # Frappe's --force drops the database even when the backup before it failed.
+        if force or no_backup:
+            cmd.append("--force")
+        if archived_sites_path:
+            cmd += ["--archived-sites-path", archived_sites_path]
         on_progress(f"Dropping site '{self.config.name}'...")
         with SiteCommands(self).setup_credentials(self.db_type) as credentials:
             run_command(cmd + credentials, cwd=self.bench.sites_path, stream_output=True)
+        # The site directory is archived, so only the cron entry remains.
+        try:
+            CronManager(self.bench.path).remove_schedule(self.config.name)
+        except CronError as error:
+            on_progress(f"Could not remove the site's backup schedule: {error}")
         self._remove_from_bench_toml()
         self._release_domains(provider_domains)
         on_progress(f"\nSite '{self.config.name}' dropped.")

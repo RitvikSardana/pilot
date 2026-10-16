@@ -293,3 +293,54 @@ def test_files_already_at_the_app_path_are_kept(tmp_path: Path, monkeypatch: pyt
         _repository_of(remote, tmp_path / "app").clone_rev("0" * 40)
 
     assert (tmp_path / "app" / "notes").read_text() == "not ours"
+
+
+@pytest.mark.parametrize(
+    ("changed_file", "has_migrate_changes"),
+    [
+        ("demo/public/js/form.js", False),
+        ("demo/demo/doctype/task/task.py", False),
+        ("demo/demo/doctype/task/task.json", True),
+        ("demo/hooks.py", True),
+        ("demo/patches.txt", True),
+        ("demo/fixtures/role.json", True),
+        ("demo/demo/custom/user.json", True),
+    ],
+)
+def test_has_migrate_changes_follows_the_changed_files(
+    tmp_path: Path, changed_file: str, has_migrate_changes: bool
+) -> None:
+    path, _ = _repo_with_two_commits(tmp_path / "app")
+    (path / changed_file).parent.mkdir(parents=True, exist_ok=True)
+    (path / changed_file).write_text("change")
+    _git(path, "add", changed_file)
+    _git(path, "commit", "-qm", "change")
+    target = GitRepo(path).head_sha
+    _git(path, "checkout", "-q", "HEAD~1")
+
+    pin = RevisionPin(kind="commit", ref=target)
+    assert _repository(path).has_migrate_changes(pin) is has_migrate_changes
+
+
+def test_has_migrate_changes_assumes_a_migrate_when_the_target_cannot_be_fetched(tmp_path: Path) -> None:
+    path, _ = _repo_with_two_commits(tmp_path / "app")
+
+    pin = RevisionPin(kind="commit", ref="f" * 40)
+    assert _repository(path).has_migrate_changes(pin) is True
+
+
+def test_has_migrate_changes_sees_a_doctype_moved_out_of_place(tmp_path: Path) -> None:
+    path, _ = _repo_with_two_commits(tmp_path / "app")
+    doctype = path / "demo/demo/doctype/task/task.json"
+    doctype.parent.mkdir(parents=True)
+    doctype.write_text('{"doctype": "DocType", "name": "Task", "fields": []}\n' * 20)
+    _git(path, "add", ".")
+    _git(path, "commit", "-qm", "add task")
+    (path / "demo/archive").mkdir(parents=True)
+    _git(path, "mv", "demo/demo/doctype/task/task.json", "demo/archive/task.json")
+    _git(path, "commit", "-qm", "move task")
+    target = GitRepo(path).head_sha
+    _git(path, "checkout", "-q", "HEAD~1")
+
+    pin = RevisionPin(kind="commit", ref=target)
+    assert _repository(path).has_migrate_changes(pin) is True

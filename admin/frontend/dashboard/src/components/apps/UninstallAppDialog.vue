@@ -15,6 +15,8 @@ interface AppRef {
   label?: string
   description?: string
   logo_url?: string | null
+  // The site lists the app but the bench lacks it, so only the listing is removed.
+  missing?: boolean
 }
 
 interface Props {
@@ -40,10 +42,17 @@ const error = ref('')
 const appLabel = computed(() => props.app?.title || props.app?.name || '')
 const appName = computed(() => props.app?.name ?? '')
 
-const uninstallWarning = computed(() => ({
-  title: `This can't be undone.`,
-  message: `Every doctype ${appLabel.value} owns is dropped from ${props.siteName}, along with the records in it. Back the site up first if you need the data.`,
-}))
+const uninstallWarning = computed(() =>
+  props.app?.missing
+    ? {
+        title: 'Only the listing is removed.',
+        message: `${props.siteName} stops listing ${appLabel.value}. Its doctypes and records, if any, stay in the database.`,
+      }
+    : {
+        title: `This can't be undone.`,
+        message: `Every doctype ${appLabel.value} owns is dropped from ${props.siteName}, along with the records in it. Back the site up first if you need the data.`,
+      },
+)
 
 const options = computed(() => [
   {

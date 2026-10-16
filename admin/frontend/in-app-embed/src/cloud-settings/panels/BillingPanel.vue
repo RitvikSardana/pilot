@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { useTranslation } from '../translation'
-import { getAccountUrl, reconcilePaymentSetup, removePaymentMethod } from '@frappe/cloud-sdk/api'
+import { reconcilePaymentSetup, removePaymentMethod } from '@frappe/cloud-sdk/api'
 import { Button, ErrorMessage } from 'frappe-ui'
 import { computed, ref, watch } from 'vue'
 import AddPaymentCard from '../components/AddPaymentCard.vue'
 import BillingProfileCard from '../components/BillingProfileCard.vue'
+import ChangePlanCard from '../components/ChangePlanCard.vue'
 import Panel from '../components/Panel.vue'
 import { openExternal } from '../external'
 import { useErrorMessage, type Store } from '../store'
@@ -23,12 +24,11 @@ const store = props.store
 const flow = ref('')
 const removing = ref(false)
 const removeError = ref('')
-const openingChangePlan = ref(false)
-const changePlanError = ref('')
 const paymentSetupError = ref('')
 
 const load = async () => {
   paymentSetupError.value = ''
+  store.loadAccountLinks()
   await store.loadBilling(true)
 
   try {
@@ -52,13 +52,27 @@ const error = computed(() => store.state.billingError)
 const loadFailed = computed(() => Boolean(error.value) && !billing.value)
 const plan = computed(() => billing.value?.plan)
 
+const formatDate = (value?: string | null) =>
+  value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value)) : ''
+
+const formatMoney = (amount: number, currency: string) =>
+  new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 0 }).format(amount)
+
 const paymentMethodNote = computed(() => {
   const trial = billing.value?.trial
   if (trial?.state === 'Ended')
-    return __('Your free trial has ended and this site is stopped. Add a payment method before {0} to keep it.', [trial.deletes_on])
+    return __('Your free trial has ended and this site is stopped. Add a payment method before {0} to keep it.', [formatDate(trial.deletes_on)])
+  if (trial?.state === 'Active' && trial.credit)
+    return __('Your free trial ends in {0} days. Add a payment method by {1} to keep this site running and get {2} credit.', [trial.days_left, formatDate(trial.credit.ends_on || trial.ends_on), formatMoney(trial.credit.amount, trial.credit.currency)])
   if (trial?.state === 'Active')
     return __('Your free trial ends in {0} days. Add a payment method to keep this site running.', [trial.days_left])
   return __('Add a payment method to keep this site running.')
+})
+
+const sleepNote = computed(() => {
+  const trial = billing.value?.trial
+  if (trial?.state !== 'Active' || !trial.sleeps_after_minutes) return ''
+  return __('Until you add a payment method, your site sleeps after {0} minutes without visitors. The next visit wakes it in a few seconds.', [trial.sleeps_after_minutes])
 })
 
 const planSubtitle = computed(() => {
@@ -90,26 +104,7 @@ const removeCard = async () => {
   }
 }
 
-const openChangePlan = async () => {
-  if (openingChangePlan.value) return
-
-  openingChangePlan.value = true
-  changePlanError.value = ''
-
-  try {
-    const response = store.state.context?.account_url
-      ? { url: store.state.context.account_url }
-      : await getAccountUrl()
-
-    if (!response?.url) throw new Error(__('Central is not configured.'))
-
-    openExternal(response.url)
-  } catch (exception) {
-    changePlanError.value = getErrorMessage(exception)
-  } finally {
-    openingChangePlan.value = false
-  }
-}
+const changePlanUrl = computed(() => store.state.accountLinks?.change_plan)
 </script>
 
 <template>
@@ -144,19 +139,27 @@ const openChangePlan = async () => {
       <Button
         class="mt-5"
         icon-right="lucide-arrow-up-right"
-        :disabled="openingChangePlan"
-        :label="openingChangePlan ? __('Opening…') : __('View plans')"
-        @click="openChangePlan"
+        :disabled="!changePlanUrl"
+        :label="__('View plans')"
+        @click="openExternal(changePlanUrl)"
       />
 
-      <ErrorMessage :message="changePlanError" class="mt-2" />
+      <ErrorMessage :message="store.state.accountLinksError" class="mt-2" />
     </div>
 
     <div v-else-if="billing" class="space-y-4">
       <ErrorMessage :message="loadFailed ? '' : error" />
       <ErrorMessage :message="paymentSetupError" />
 
+      <ChangePlanCard
+        v-if="flow === 'plan'"
+        :store="store"
+        @close="flow = ''"
+        @add-payment="startPayment"
+      />
+
       <section
+        v-else
         class="grid grid-cols-1 items-center gap-x-4 rounded-6 border border-outline-gray-2 p-5 sm:grid-cols-[minmax(0,1fr)_auto]"
       >
         <p class="text-base-semibold text-ink-gray-8">
@@ -167,13 +170,11 @@ const openChangePlan = async () => {
 
         <Button
           class="mt-3 justify-self-start sm:col-start-2 sm:row-span-2 sm:row-start-1 sm:mt-0"
-          icon-right="lucide-arrow-up-right"
-          :disabled="openingChangePlan"
-          :label="openingChangePlan ? __('Opening…') : __('Change plan')"
-          @click="openChangePlan"
+          :label="__('Change plan')"
+          @click="flow = 'plan'"
         />
 
-        <ErrorMessage :message="changePlanError" class="mt-2 sm:col-span-2" />
+        <ErrorMessage :message="store.state.accountLinksError" class="mt-2 sm:col-span-2" />
       </section>
 
       <div class="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-3">
@@ -188,7 +189,7 @@ const openChangePlan = async () => {
         </section>
 
         <section class="rounded-6 border border-outline-gray-2 p-5">
-          <p class="text-p-sm text-ink-gray-5">{{ __("Trial credit") }}</p>
+          <p class="text-p-sm text-ink-gray-5">{{ __("Credit") }}</p>
 
           <p class="mt-1.5 text-2xl-semibold tabular-nums text-ink-gray-9">
             {{ billing.credit?.amount ?? "—" }}
@@ -234,6 +235,14 @@ const openChangePlan = async () => {
 
         <p class="col-start-1 mt-0.5 text-p-sm text-ink-gray-5">
           {{ billing.payment_method ? __("Used for your monthly bill.") : paymentMethodNote }}
+        </p>
+
+        <p
+          v-if="!billing.payment_method && sleepNote"
+          class="col-start-1 mt-1 flex items-start gap-1.5 text-p-sm text-ink-gray-5"
+        >
+          <span class="lucide-moon mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          {{ sleepNote }}
         </p>
 
         <Button

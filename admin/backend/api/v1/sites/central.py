@@ -13,6 +13,9 @@ from pilot.integrations.central import CentralClient, CentralClientError
 
 class CentralAccountLink(TypedDict):
     url: str
+    billing: str
+    change_plan: str
+    server: str
 
 
 _ALLOWED_PREFIXES = ("central.billing.api.billing_api.",)
@@ -47,10 +50,23 @@ def central_proxy(name: str, method_path: str):
 @sites_bp.get("/<name>/account-url")
 @require_scope(site_name)
 def account_url(name: str):
-    """This host's Central base URL, safe for the site's browser to open."""
+    """Central dashboard links for this site, safe for the site's browser to open.
+
+    Central finds this server by its Pilot audience, as the admin dashboard's own links do."""
+    from urllib.parse import urlencode
+
     from pilot.integrations.central import InstanceMetadata
 
     credentials = InstanceMetadata().get_credentials()
     if credentials is None:
         return error_response("central_not_configured", "Central is not configured.", 503)
-    return jsonify({"url": credentials["central_endpoint"].rstrip("/")})
+
+    url = credentials["central_endpoint"].rstrip("/")
+    audience = credentials["jwks_audience_id"]
+    link: CentralAccountLink = {
+        "url": url,
+        "billing": f"{url}/dashboard/billing",
+        "change_plan": f"{url}/dashboard/servers?{urlencode({'pilot': audience, 'action': 'resize'})}",
+        "server": f"{url}/dashboard/servers?{urlencode({'pilot': audience, 'action': 'open-bench'})}",
+    }
+    return jsonify(link)

@@ -105,6 +105,13 @@ class GitRepo:
         commit is missing locally, so callers must fetch before trusting it."""
         return self._run("merge-base", "--is-ancestor", ancestor, descendant).returncode == 0
 
+    def get_changed_files(self, old: str, new: str) -> list[str] | None:
+        """Paths that differ between two commits, or None when either is missing locally."""
+        result = self._run("diff", "--name-only", "--no-renames", "-z", old, new)
+        if result.returncode != 0:
+            return None
+        return [path for path in result.stdout.split("\0") if path]
+
     def tracking_sha(self, branch: str) -> str:
         """SHA of the locally-cached remote branch tip (no network)."""
         if not branch:
@@ -157,6 +164,10 @@ class GitRepo:
     def checkout_new_branch(self, branch: str, start_point: str) -> bool:
         """Create (or reset) `branch` to start at `start_point` and check it out."""
         return self._run("checkout", "-B", branch, start_point).returncode == 0
+
+    @property
+    def git_dir(self) -> Path:
+        return Path(self._text("rev-parse", "--absolute-git-dir"))
 
     def set_remote_url(self, url: str) -> bool:
         """Point origin at *url*; returns False instead of raising on failure."""

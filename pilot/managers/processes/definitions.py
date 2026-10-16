@@ -21,6 +21,7 @@ class ProcessDefinition:
     working_dir: Path | None = None  # was `cd {dir} &&`
     stop_timeout: int | None = None  # graceful-stop seconds (redis=300)
     critical: bool = True  # dev runner stops the whole bench when this process exits
+    socket_file: Path | None = None  # removed before each start; a stale one blocks listen()
 
 
 class ProcessDefinitionBuilder:
@@ -76,6 +77,8 @@ class ProcessDefinitionBuilder:
             )
         if pd.name == "web":
             return self.web_definition(dev=True)
+        if pd.name == "socketio":
+            return self.socketio_definition(dev=True)
         return pd
 
     def python_env(self) -> dict:
@@ -148,7 +151,8 @@ class ProcessDefinitionBuilder:
             stop_timeout=lite_mode.stop_timeout,
         )
 
-    def socketio_definition(self) -> ProcessDefinition:
+    def socketio_definition(self, dev: bool = False) -> ProcessDefinition:
+        socket = None if dev else self.bench.realtime_socket
         if self.bench.config.socketio_backend == "python":
             argv = [str(self.python), "-m", "frappe.realtime.server"]
             working_dir = self.bench.path
@@ -156,13 +160,14 @@ class ProcessDefinitionBuilder:
         else:
             argv = ["node", f"{self.bench.apps_path}/frappe/socketio.js"]
             working_dir = self.bench.sites_path
-            backend_env = {}
+            backend_env = {"FRAPPE_SOCKETIO_UDS": str(socket)} if socket else {}
         return ProcessDefinition(
             name="socketio",
             argv=argv,
             log_file=self.bench.logs_path / "socketio.log",
             env=backend_env,
             working_dir=working_dir,
+            socket_file=socket,
         )
 
     def watch_definition(self) -> ProcessDefinition:

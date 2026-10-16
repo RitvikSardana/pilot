@@ -40,6 +40,8 @@ A new bench deploys one bench process plus admin and the two redis servers, beca
 socketio, admin, workers, and redis - see [Lite Mode](configuration.md#lite-mode).
 Supervisor also runs a `schedule` process; systemd's worker pool runs the scheduler itself.
 
+With systemd, the Node socketio process listens on the Unix socket `config/socketio.sock` in the bench, and nginx proxies `/socket.io` to it, so realtime does not answer on a public port. Supervisor, the Python backend, and a Frappe that does not read `FRAPPE_SOCKETIO_UDS` (before v16) keep `socketio_port`. With systemd, nginx tries the socket first and then `socketio_port`, so realtime answers when the realtime process and nginx were configured for different Frappe versions.
+
 Each workload unit sets `LimitNOFILE=65535`. A systemd user unit gets 1024
 descriptors by default, which is too few for a lite-mode bench process and for
 redis under load.
@@ -70,6 +72,8 @@ Programs declared only in extension fragments are not members of Pilot's generat
 
 Nginx config is rendered from bench and site state. Regenerate it with `pilot setup nginx` or `pilot setup config`.
 
+All benches on a host share one nginx. A config change holds the host lock `benches/.nginx.lock` from its first write until `nginx -t` passes and nginx reloads, or until Pilot puts back the files that nginx rejected. Another bench's config change waits for the lock, so its `nginx -t` never sees untested files.
+
 Let's Encrypt setup uses configured domains and should run after nginx is rendered. Site domain changes should reload nginx through site/domain code.
 
 With local TLS enabled, `pilot setup production` enables SSL for each existing site with a public site name or custom domain.
@@ -82,6 +86,8 @@ pilot setup production --admin-domain admin.example.com --tls --letsencrypt-emai
 ```
 
 You can also set `letsencrypt.email` in `common_config.toml` before setup.
+
+Let's Encrypt setup also installs the host-wide user timer `pilot-certificates.timer`. It runs 15 minutes after boot and then daily. It runs `certbot renew` once for the host, then checks every production bench: a certificate with less than 14 days left gets an alert in the bench's notifications and its alert sinks, because certbot renews from 30 days left. Its log is `system/logs/certificates.log` in the Pilot directory.
 When an upstream proxy terminates HTTPS, set `admin.tls = false` so Pilot does not change site SSL settings or request certificates.
 
 When requests arrive from configured proxy servers, Pilot preserves the forwarded scheme supplied by an edge that terminates TLS. Socket.IO also preserves an explicit browser `Origin` and reconstructs a same-origin value from the forwarded scheme and host only when that header is absent.
@@ -100,11 +106,11 @@ Firewall and WAF config are bench settings. Settings apply code should delegate 
 
 ## JS Dependencies
 
-Before a build, Pilot installs each app's JS dependencies with the package manager its lockfile names: `pnpm-lock.yaml` uses pnpm, and `yarn.lock` or no lockfile uses yarn. The install uses the frozen lockfile and fails the build when the lockfile is out of date. A `frontend` or `roster` folder without its own lockfile installs from the app root when the app root workspace lists it. For an app root with `pnpm-lock.yaml`, the folder must be an importer in that lockfile. For other app roots, the folder must match the `workspaces` patterns in `package.json`. Pilot installs pnpm into `~/.local` the first time an app needs it. An app with both lockfiles fails the build.
+Before a build, Pilot installs each app's JS dependencies with the package manager its lockfile names: `pnpm-lock.yaml` uses pnpm, and `yarn.lock` or no lockfile uses yarn. The install uses the frozen lockfile and fails the build when the lockfile is out of date. Pilot checks the app root, the `frontend` and `roster` folders, and each `build_dir` in `[tool.bench.assets]`, and installs where `node_modules` is missing or older than the lockfile. A folder without its own lockfile installs from the app root when the app root workspace lists it. For an app root with `pnpm-lock.yaml`, the folder must be an importer in that lockfile. For other app roots, the folder must match the `workspaces` patterns in `package.json`. Pilot installs pnpm into `~/.local` the first time an app needs it. An app with both lockfiles fails the build.
 
 ## Build Memory Cap
 
-Asset builds (`pilot build`, and rebuilds triggered from app updates) run capped at 85% of the host's free memory via a transient systemd scope, so a runaway build fails instead of the kernel picking a victim process, usually the database. Past the RAM cap the build may use the same share of free swap, and the kernel kills the build when it reaches both. A full asset build peaks near 1.6GB, and some app frontends (for example Helpdesk) need more than 2GB, so a host with 4GB of RAM needs swap to build them. An idle bench is around 300MB. Hosts with less free memory than that are refused up front with a clear message rather than started and killed mid-build.
+Asset builds (`pilot build`, and rebuilds triggered from app updates) run capped at 85% of the host's free memory via a transient systemd scope, so a runaway build fails instead of the kernel picking a victim process, usually the database. Past the RAM cap the build may use the same share of free swap, and the kernel kills the build when it reaches both. A full asset build peaks near 1.6GB, and some app frontends (for example Helpdesk) need more than 2GB, so a host with 4GB of RAM needs swap to build them. When the host has less than 3GB of free memory and the root phase of `install.sh` installed `/usr/local/sbin/pilot-build-swap`, Pilot adds a 2GB swap file (`/var/lib/pilot/build.swap`) for the length of the build and removes it after. Builds that run at the same time share it, and a reboot resets it. MariaDB's unit sets `MemorySwapMax=0`, so the database never swaps. An idle bench is around 300MB. Hosts with less free memory than that are refused up front with a clear message rather than started and killed mid-build.
 
 The cap applies only to hosts with `systemd-run` and cgroup memory delegation available; where neither is available the build runs uncapped with a warning. Concurrent builds are not coordinated - each sizes its cap independently from memory free at the time it starts.
 

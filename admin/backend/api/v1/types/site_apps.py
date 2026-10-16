@@ -12,6 +12,8 @@ class SiteApp(TypedDict):
     version: str
     repo: str
     has_local_changes: NotRequired[bool]
+    is_marketplace: NotRequired[bool]
+    missing: NotRequired[bool]
 
 
 class SiteApps(TypedDict):

@@ -63,6 +63,10 @@ Settings screens edit `bench.toml` through the backend. The frontend should not 
 
 Post-save changes such as restarts, firewall sync, WAF sync, or S3 credential sync belong in backend/core code.
 
+## Cloud Settings Billing
+
+The Billing panel changes the site plan in the dialog. **Change plan** opens an inline plan list from `getPlanOptions`. During a free trial, the list asks for a payment method first and opens the card flow. A bigger plan stops the site for a few minutes, so the panel says so, calls `changePlan`, and opens the `progress_url` that Central returns. That page lives on Central and brings the user back when the site answers. **See more plans in Frappe Cloud** opens Central for custom sizes. During a trial, the panel also says the last day to earn the welcome credit, and that the site sleeps when idle. See the [Cloud SDK](../admin/frontend/cloud-sdk/README.md) for the call shapes.
+
 ## UX Expectations
 
 - Show the current bench and site context clearly.

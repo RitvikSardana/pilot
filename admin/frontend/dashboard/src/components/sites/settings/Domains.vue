@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Badge,
   Button,
@@ -34,6 +34,8 @@ const { nginxEnabled, reload } = useSite(props.siteName)
 
 const domains = ref<SiteDomain[]>([])
 const primaryDomain = ref('')
+const certificateEmailRequired = ref(false)
+const certificatePending = ref(false)
 const loading = ref(false)
 const error = ref('')
 
@@ -65,13 +67,23 @@ const domainMenuOptions = (row: DomainRow): DropdownItem[] => {
   return options
 }
 
-const loadDomains = async () => {
-  loading.value = true
+const PENDING_POLL_MS = 5000
+let pendingPoll: ReturnType<typeof setTimeout> | undefined
+let unmounted = false
+
+const loadDomains = async (quiet = false) => {
+  clearTimeout(pendingPoll)
+  loading.value = !quiet
   error.value = ''
   try {
     const data = await sitesApi.domains.list(props.siteName)
     domains.value = data.domains || []
     primaryDomain.value = data.primary || ''
+    certificateEmailRequired.value = Boolean(data.certificate_email_required)
+    certificatePending.value = Boolean(data.certificate_pending)
+    if (certificatePending.value && !unmounted) {
+      pendingPoll = setTimeout(() => loadDomains(true), PENDING_POLL_MS)
+    }
   } catch (e) {
     error.value = errorMessage(e, 'Failed to load domains.')
   } finally {
@@ -109,6 +121,11 @@ onMounted(() => {
 watch(nginxEnabled, (enabled) => {
   if (enabled) loadDomains()
 })
+
+onUnmounted(() => {
+  unmounted = true
+  clearTimeout(pendingPoll)
+})
 </script>
 
 <template>
@@ -123,7 +140,7 @@ watch(nginxEnabled, (enabled) => {
         class="flex justify-between items-start gap-x-2.5 first:mt-1 py-4 border-b border-outline-alpha-gray-1"
       >
         <div class="flex items-start gap-2.5 min-w-0">
-          <Tooltip :text="row.tls ? 'TLS active' : 'TLS inactive'">
+          <Tooltip :text="row.tls ? 'TLS active' : certificatePending ? 'Certificate pending' : 'TLS inactive'">
             <span
               class="mt-0.5 size-4 text-ink-gray-5 shrink-0"
               :class="row.tls ? 'lucide-lock text-ink-green-5' : 'lucide-lock-open'"
@@ -134,6 +151,13 @@ watch(nginxEnabled, (enabled) => {
             <p class="font-medium text-ink-gray-8 truncate">{{ row.domain }}</p>
             <Badge v-if="row.isPrimary" label="Primary" theme="green" size="sm" class="shrink-0" />
             <Badge v-else-if="row.isSite" label="Included" size="sm" class="shrink-0" />
+            <Badge
+              v-if="!row.tls && certificatePending"
+              label="Certificate pending"
+              theme="amber"
+              size="sm"
+              class="shrink-0"
+            />
           </div>
         </div>
 
@@ -158,7 +182,12 @@ watch(nginxEnabled, (enabled) => {
     </template>
   </div>
 
-  <AddDomainDialog v-model="showAdd" :site-name="siteName" @added="loadDomains" />
+  <AddDomainDialog
+    v-model="showAdd"
+    :site-name="siteName"
+    :email-required="certificateEmailRequired"
+    @added="loadDomains"
+  />
   <RemoveDomainDialog
     v-model="showRemove"
     :site-name="siteName"

@@ -16,3 +16,13 @@ def _dev_build(monkeypatch):
     """A release tarball's VERSION file left in a checkout must not change test defaults."""
     monkeypatch.setattr(pilot, "__version__", "dev")
     monkeypatch.setattr(pilot, "is_dev_build", True)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_nginx_lock(monkeypatch):
+    """The host-wide nginx lock lives in the installation's benches folder, not a test's."""
+    from contextlib import nullcontext
+
+    from pilot.managers.nginx import NginxManager
+
+    monkeypatch.setattr(NginxManager, "config_lock", lambda self: nullcontext())

@@ -120,6 +120,7 @@ class SystemdProcessManager(SystemdUserMixin, ManagedProcessManager):
         # reset-failed clears rate-limit state so re-deploys can restart the admin socket.
         subprocess.run(self._systemctl("reset-failed", *units), capture_output=True, env=env)
         run_command(self._systemctl("enable", self._target_name()), env=env)
+        self.enable_admin_at_boot()
         self._enable_central_bootstrap(env)
         self._activate_admin(env)
 
@@ -180,6 +181,15 @@ class SystemdProcessManager(SystemdUserMixin, ManagedProcessManager):
             return result.returncode == 0
         except FileNotFoundError:
             return False
+
+    def enable_admin_at_boot(self) -> None:
+        run_command(self._systemctl("enable", self._unit_name("admin")), env=self._systemctl_env())
+
+    @override
+    def wake_admin(self) -> None:
+        run_command(
+            self._systemctl("start", "--no-block", self._unit_name("admin")), env=self._systemctl_env()
+        )
 
     def start_admin(self) -> None:
         # Base start_admin only daemon-reloads; we need full install for a new bench.

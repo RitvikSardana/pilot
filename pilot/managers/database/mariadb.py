@@ -37,6 +37,10 @@ from pilot.utils import cli_root, run_command
 _CLIENT_TIMEOUT = 5
 _IMPORT_CHUNK_BYTES = 1024 * 1024
 _MEMORY_RELEASE_TIMEOUT = 60
+# A host whose memory moved by less than this keeps its sizing.
+_RESIZE_THRESHOLD_MB = 100
+_SIZED_FOR = re.compile(r"^# pilot-sized-for-memory-mb = (\d+)$", re.M)
+_SIZING_UNIT_NAME = "pilot-mariadb-sizing.service"
 _MANAGED_CONFIG_HEADER = "# Managed by Pilot's database variable editor.\n"
 _OPTION_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _MEBIBYTE = 1024 * 1024
@@ -126,6 +130,7 @@ class MariaDBManager(UserOwnedDBManager):
             sizing = self._write_config()
             self._initialize_data_dir()
             self._install_unit(sizing)
+            self.install_sizing_unit()
             self._reset_failed_state()
             run_command(self._systemctl("enable", "--now", self._UNIT_NAME), env=self._systemctl_env())
 
@@ -152,13 +157,14 @@ class MariaDBManager(UserOwnedDBManager):
         """Write every server setting into our own my.cnf so mariadbd, launched
         with --defaults-file, never falls back to reading /etc/mysql/my.cnf."""
         total_memory_mb = self._total_memory_mb()
-        sizing = calculate_mariadb_memory(total_memory_mb)
-        limits = calculate_mariadb_variable_limits(total_memory_mb)
+        sizing = calculate_mariadb_memory(total_memory_mb, self.config.memory_share)
+        limits = calculate_mariadb_variable_limits(total_memory_mb, self.config.memory_share)
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_managed_cnf()
         content = (
             "# Managed by Pilot.\n"
+            f"# pilot-sized-for-memory-mb = {total_memory_mb}\n"
             "[mysqld]\n"
             f"datadir = {self.data_dir}\n"
             f"socket = {self.socket_path}\n"
@@ -291,18 +297,89 @@ class MariaDBManager(UserOwnedDBManager):
         """
         self._require_linux_managed_server()
         with self.database_action_lock():
-            sizing = self._write_config()
-            self._install_unit(sizing)
-            self._wait_until_healthy()
-            current_max = self._unit_memory_mb("MemoryMax")
-            # Raise the limits before MariaDB grows, and lower them only after it shrinks.
-            if current_max is not None and sizing.memory_max_mb >= current_max:
-                self._set_runtime_memory_limits(sizing)
-                self._apply_live_sizing(sizing)
-            else:
-                self._apply_live_sizing(sizing)
-                self._lower_runtime_memory_limits(sizing)
+            return self.tune_to_host_locked()
+
+    def tune_to_host_locked(self) -> MariaDBMemorySizing:
+        """`tune_to_host` for a caller that already holds `database_action_lock`."""
+        self._require_linux_managed_server()
+        self._drop_oversized_buffer_pool_override()
+        sizing = self._write_config()
+        self._wait_until_healthy()
+        current_max = self._unit_memory_mb("MemoryMax")
+        # Raise the limits before MariaDB grows, and lower them only after it shrinks.
+        if current_max is not None and sizing.memory_max_mb >= current_max:
+            self._set_runtime_memory_limits(sizing)
+            self._apply_live_sizing(sizing)
+        else:
+            self._apply_live_sizing(sizing)
+            if not self._has_released_memory(sizing):
+                return sizing
+            self._set_runtime_memory_limits(sizing)
+        # Last, so a failed or deferred attempt leaves the old unit for the next sizing to retry.
+        self._install_unit(sizing)
         return sizing
+
+    @property
+    def sized_for_memory_mb(self) -> int | None:
+        """The host memory my.cnf was sized for, or None when it is not recorded."""
+        match = _SIZED_FOR.search(self.my_cnf_path.read_text()) if self.my_cnf_path.exists() else None
+        return int(match.group(1)) if match else None
+
+    def size_for_host(self) -> MariaDBMemorySizing | None:
+        """Size the server again before it starts when the host memory or the unit limits no
+        longer match the sizing. Run by the sizing unit."""
+        if is_macos() or self.config.existing or not self.my_cnf_path.exists():
+            return None
+        sized_for = self.sized_for_memory_mb
+        if sized_for is not None and abs(self._total_memory_mb() - sized_for) < _RESIZE_THRESHOLD_MB:
+            # tune_to_host leaves the old unit when a shrink must wait.
+            sized_unit = self._render_unit(calculate_mariadb_memory(sized_for, self.config.memory_share))
+            if self.unit_path.exists() and self.unit_path.read_text() == sized_unit:
+                return None
+        self._drop_oversized_buffer_pool_override()
+        sizing = self._write_config()
+        # Runtime properties apply now; a daemon-reload while systemd starts MariaDB would block.
+        self.unit_path.write_text(self._render_unit(sizing))
+        self._set_runtime_memory_limits(sizing)
+        return sizing
+
+    def install_sizing_unit(self) -> None:
+        """Install the oneshot that runs `size_for_host` before every MariaDB start."""
+        from pilot.managers.environment import AdminEnvManager
+
+        root = cli_root()
+        content = (
+            "[Unit]\n"
+            "Description=Size Pilot's MariaDB for this host's memory\n"
+            "Before=pilot-mariadb.service\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            f"WorkingDirectory={root}\n"
+            f"Environment=PYTHONPATH={root}\n"
+            f"ExecStart={AdminEnvManager(root).python} -m pilot.managers.database\n\n"
+            "[Install]\n"
+            "WantedBy=pilot-mariadb.service\n"
+        )
+        self.user_unit_dir.mkdir(parents=True, exist_ok=True)
+        (self.user_unit_dir / _SIZING_UNIT_NAME).write_text(content)
+        env = self._systemctl_env()
+        run_command(self._systemctl("daemon-reload"), env=env)
+        run_command(self._systemctl("enable", _SIZING_UNIT_NAME), env=env)
+
+    def _drop_oversized_buffer_pool_override(self) -> None:
+        """A buffer pool size saved on a larger host does not fit this one, so the sizing takes over."""
+        options = self._read_managed_options() if self.managed_cnf_path.exists() else {}
+        saved = options.get("innodb-buffer-pool-size", "")
+        limit_mb = self.variable_limits().innodb_buffer_pool_max_mb
+        if not saved.removesuffix("M").isdigit() or int(saved.removesuffix("M")) <= limit_mb:
+            return
+        for name in (
+            "innodb-buffer-pool-size",
+            "innodb-buffer-pool-size-auto-min",
+            "innodb-buffer-pool-size-max",
+        ):
+            options.pop(name, None)
+        atomic_write_private_text(self.managed_cnf_path, self._render_managed_options(options))
 
     def _apply_live_sizing(self, sizing: MariaDBMemorySizing) -> None:
         overrides = set(self._read_managed_options())
@@ -320,23 +397,31 @@ class MariaDBManager(UserOwnedDBManager):
         finally:
             connection.close()
 
-    def _lower_runtime_memory_limits(self, sizing: MariaDBMemorySizing) -> None:
-        """Lower the unit memory limits once MariaDB uses less than the new soft limit.
-
-        A smaller buffer pool releases its memory gradually, and the hard limit must not kill
-        the server first. If the memory stays high or cannot be read, the limits apply at the
-        next start.
-        """
+    def _has_released_memory(self, sizing: MariaDBMemorySizing) -> bool:
+        """Wait until MariaDB uses less than the new soft limit, so a lower hard limit cannot
+        kill it. False when the memory stays high or cannot be read."""
         deadline = time.monotonic() + _MEMORY_RELEASE_TIMEOUT
         while (usage := self._unit_memory_mb("MemoryCurrent")) is None or usage >= sizing.memory_high_mb:
             if time.monotonic() >= deadline:
                 logging.getLogger(__name__).warning(
-                    "MariaDB memory use is unknown or above %s MiB; its new memory limits apply at the next start.",
+                    "MariaDB memory use is unknown or above %s MiB; its memory limits stay until a later attempt.",
                     sizing.memory_high_mb,
                 )
-                return
+                return False
             time.sleep(1)
-        self._set_runtime_memory_limits(sizing)
+        return True
+
+    def keep_out_of_swap(self) -> None:
+        """Set MemorySwapMax to 0, live first and then in the unit file, so a failed attempt can retry."""
+        if is_macos() or self.config.existing or not self.unit_path.exists():
+            return
+        env = self._systemctl_env()
+        run_command(self._systemctl("set-property", "--runtime", self._UNIT_NAME, "MemorySwapMax=0"), env=env)
+        current = self.unit_path.read_text()
+        unit = re.sub(r"^MemorySwapMax=.*$", "MemorySwapMax=0", current, flags=re.M)
+        if unit != current:
+            self.unit_path.write_text(unit)
+            run_command(self._systemctl("daemon-reload"), env=env)
 
     def raise_memory_high(self) -> bool:
         """Raise the unit's MemoryHigh to `memory_high_for` its MemoryMax, on disk and live.
@@ -368,6 +453,7 @@ class MariaDBManager(UserOwnedDBManager):
                 self._UNIT_NAME,
                 f"MemoryHigh={sizing.memory_high_mb}M",
                 f"MemoryMax={sizing.memory_max_mb}M",
+                "MemorySwapMax=0",
             ),
             env=self._systemctl_env(),
         )
@@ -434,8 +520,12 @@ class MariaDBManager(UserOwnedDBManager):
                 )
             return True
 
+    @property
+    def host_memory_mb(self) -> int:
+        return self._total_memory_mb()
+
     def variable_limits(self) -> MariaDBVariableLimits:
-        return calculate_mariadb_variable_limits(self._total_memory_mb())
+        return calculate_mariadb_variable_limits(self._total_memory_mb(), self.config.memory_share)
 
     def innodb_buffer_pool_size_mb(self) -> int:
         return self._read_global_integer("innodb_buffer_pool_size") // _MEBIBYTE
@@ -834,8 +924,13 @@ class MariaDBManager(UserOwnedDBManager):
         return total_memory_mb
 
     def _install_unit(self, sizing: MariaDBMemorySizing) -> None:
+        self.user_unit_dir.mkdir(parents=True, exist_ok=True)
+        self.unit_path.write_text(self._render_unit(sizing))
+        run_command(self._systemctl("daemon-reload"), env=self._systemctl_env())
+
+    def _render_unit(self, sizing: MariaDBMemorySizing) -> str:
         mariadbd = which("mariadbd") or which("mysqld") or "/usr/sbin/mariadbd"
-        content = (
+        return (
             "[Unit]\n"
             "Description=MariaDB (pilot, user-owned)\n\n"
             "[Service]\n"
@@ -846,15 +941,11 @@ class MariaDBManager(UserOwnedDBManager):
             "LimitNOFILE=65535\n"
             f"MemoryHigh={sizing.memory_high_mb}M\n"
             f"MemoryMax={sizing.memory_max_mb}M\n"
-            "MemorySwapMax=100M\n"
+            "MemorySwapMax=0\n"
             "Restart=on-failure\n\n"
             "[Install]\n"
             "WantedBy=default.target\n"
         )
-        unit_dir = self.user_unit_dir
-        unit_dir.mkdir(parents=True, exist_ok=True)
-        self.unit_path.write_text(content)
-        run_command(self._systemctl("daemon-reload"), env=self._systemctl_env())
 
     def is_reachable(self) -> bool:
         if not self.is_running():
@@ -1053,3 +1144,12 @@ class MariaDBManager(UserOwnedDBManager):
         if not is_macos() and Path(self.socket_path).exists():
             return self.socket_path
         return ""
+
+
+def main() -> None:
+    """Entry point of the sizing unit: one MariaDB serves every bench of this host."""
+    from pilot.config.common import CommonConfig
+    from pilot.utils import benches_dir
+
+    if sizing := MariaDBManager(CommonConfig.read(benches_dir()).mariadb).size_for_host():
+        print(f"Sized MariaDB for {sizing.total_memory_mb} MiB of host memory.")

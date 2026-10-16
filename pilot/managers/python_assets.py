@@ -29,22 +29,24 @@ class PythonAssetBuilder:
     def run_compiler(self, argv: list[str], **kwargs) -> None:
         """Run a compiler capped at a share of host memory, so a runaway build
         fails instead of exhausting the machine. Uncapped where the host cannot cap."""
+        from pilot.core.build_memory import build_swap
+
+        with build_swap():
+            self._run_capped(argv, **kwargs)
+
+    def _run_capped(self, argv: list[str], **kwargs) -> None:
         from pilot.core.build_memory import build_memory_limit_mb, build_swap_limit_mb, can_read_memory
 
         limit_mb = build_memory_limit_mb(self.bench.config.build.memory_limit_mb) if can_read_memory() else 0
         capped = bool(limit_mb) and can_cap_memory()
+        command = argv[0]
         if capped:
             swap_mb = build_swap_limit_mb()
             argv = memory_capped(argv, limit_mb, swap_mb)
         else:
             logging.warning("Memory control unavailable here, so this build runs uncapped.")
 
-        env = {**systemctl_env(), **(kwargs.get("env") or {})}
-        node_options = env.get("NODE_OPTIONS", "")
-        # V8 stops near 2GB whatever the cap; leave a quarter of the cap for native memory.
-        if limit_mb and "--max-old-space-size" not in node_options:
-            env["NODE_OPTIONS"] = f"{node_options} --max-old-space-size={limit_mb * 3 // 4}".strip()
-        kwargs["env"] = env
+        kwargs["env"] = self.get_build_env(kwargs.get("env") or {}, limit_mb)
         try:
             run_command(argv, **kwargs)
         except CommandError as error:
@@ -56,9 +58,18 @@ class PythonAssetBuilder:
                     "in bench.toml, then retry."
                 ) from error
             raise CommandError(
-                error.message.replace(repr("systemd-run"), repr(argv[0]), 1),
+                error.message.replace(repr("systemd-run"), repr(command), 1),
                 returncode=error.returncode,
             ) from error
+
+    @staticmethod
+    def get_build_env(env: dict, limit_mb: int) -> dict:
+        env = {**systemctl_env(), **env}
+        node_options = env.get("NODE_OPTIONS", "")
+        # V8 stops near 2GB whatever the cap; leave a quarter of the cap for native memory.
+        if limit_mb and "--max-old-space-size" not in node_options:
+            env["NODE_OPTIONS"] = f"{node_options} --max-old-space-size={limit_mb * 3 // 4}".strip()
+        return env
 
     def build_assets(self) -> None:
         for app in self.bench.apps():
@@ -88,6 +99,10 @@ class PythonAssetBuilder:
                     self.build_page_islands()
                 return
 
+        with app.record_lockfiles_on_failure():
+            self.build_app_from_source(app)
+
+    def build_app_from_source(self, app: "App") -> None:
         # Frappe's build runs the app's build script, which can build `frontend`/`roster`, so
         # their node_modules must be installed before it.
         for packages in get_app_packages(app.path, self.frontend_dirs(app)):
@@ -117,11 +132,12 @@ class PythonAssetBuilder:
 
     @staticmethod
     def frontend_dirs(app: "App") -> list[Path]:
-        return [
-            app.path / name
-            for name in ("frontend", "roster")
-            if NodePackages(app.path / name).has_package_json
-        ]
+        """`frontend`, `roster` and each build dir that `[tool.bench.assets]` declares, such as
+        Helpdesk's `desk`, that has a package.json."""
+        from pilot.core.app.prebuilt_assets import asset_build_dirs
+
+        names = dict.fromkeys(["frontend", "roster", *asset_build_dirs(app)])
+        return [app.path / name for name in names if NodePackages(app.path / name).has_package_json]
 
     def setup_prebuilt_assets(
         self,

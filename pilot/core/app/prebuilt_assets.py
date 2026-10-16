@@ -22,16 +22,28 @@ _DOWNLOAD_TIMEOUT_SECONDS = 60
 _CHUNK_BYTES = 1024 * 1024
 
 
-def build_output_paths(app: App) -> list[str]:
-    """Paths from `[tool.bench.assets]` that the asset build rewrites, relative to the app root."""
+def _asset_tables(app: App) -> list[dict]:
     from pilot.core.app.validator.base import bench_table
 
     assets = bench_table(app).get("assets", [])
+    return [spa for spa in ([assets] if isinstance(assets, dict) else assets) if isinstance(spa, dict)]
+
+
+def _build_dir(spa: dict) -> str:
+    return posixpath.normpath(str(spa.get("build_dir", "")) or ".")
+
+
+def asset_build_dirs(app: App) -> list[str]:
+    """Frontend directories inside the app that `[tool.bench.assets]` builds, relative to the app root."""
+    build_dirs = [_build_dir(spa) for spa in _asset_tables(app)]
+    return [build_dir for build_dir in build_dirs if build_dir != "." and not build_dir.startswith("..")]
+
+
+def build_output_paths(app: App) -> list[str]:
+    """Paths from `[tool.bench.assets]` that the asset build rewrites, relative to the app root."""
     paths = []
-    for spa in [assets] if isinstance(assets, dict) else assets:
-        if not isinstance(spa, dict):
-            continue
-        build_dir = posixpath.normpath(str(spa.get("build_dir", "")) or ".")
+    for spa in _asset_tables(app):
+        build_dir = _build_dir(spa)
         for key in ("out_dir", "index_html_path"):
             if path := str(spa.get(key, "")):
                 # Vite-style "../" paths are relative to build_dir, others to the app root.

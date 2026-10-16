@@ -192,6 +192,9 @@ class ProcessManager:
     def restart_admin(self) -> None:
         pass
 
+    def wake_admin(self) -> None:
+        """Start an Admin that stopped on idle. Only a socket-activated Admin stops."""
+
     def is_admin_running(self) -> bool:
         return _tcp_port_open(self.bench.config.admin.port)
 

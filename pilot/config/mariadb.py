@@ -1,5 +1,9 @@
 from dataclasses import dataclass
 
+from pilot.exceptions import ConfigError
+
+MEMORY_SHARE_RANGE = (0.2, 0.8)
+
 
 @dataclass
 class MariaDBConfig:
@@ -11,3 +15,9 @@ class MariaDBConfig:
     admin_user: str = "root"
     socket_path: str = ""
     existing: bool = False
+    memory_share: float = 0.5
+
+    def validate(self) -> None:
+        low, high = MEMORY_SHARE_RANGE
+        if not low <= self.memory_share <= high:
+            raise ConfigError(f"mariadb.memory_share must be between {low} and {high}.")

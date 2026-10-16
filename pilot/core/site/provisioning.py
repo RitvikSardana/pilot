@@ -125,18 +125,32 @@ class SiteProvisioner:
         NginxManager(self.bench).reload_for_site_change()
 
     def obtain_cert(self, site: "Site", on_progress: Callable[[str], None]) -> None:
+        """Issue the site's certificate. A failure leaves the new site on HTTP, so the
+        task does not fail and drop a site that works."""
+        from pilot.exceptions import CommandError
         from pilot.managers.letsencrypt import LetsEncryptManager
         from pilot.managers.nginx import NginxManager
 
         if not self.bench.config.production.enabled:
             return
+        if not self.bench.config.letsencrypt.email:
+            on_progress(
+                "No Let's Encrypt email is set, so the site stays on HTTP. Enable SSL from its settings."
+            )
+            return
 
         site.set_ssl(True)
         on_progress("Obtaining SSL certificate...")
-        nginx_manager = NginxManager(self.bench)
-        LetsEncryptManager(self.bench).obtain(site.config)
-        nginx_manager.generate_config(ssl_ready=True)
-        nginx_manager.reload()
+        try:
+            LetsEncryptManager(self.bench).obtain(site.config)
+        except CommandError as error:
+            site.set_ssl(False)
+            on_progress(
+                f"Could not obtain a certificate yet ({error}). The site stays on HTTP. "
+                "Enable SSL from its settings once its DNS points to this server."
+            )
+            return
+        NginxManager(self.bench).apply_config()
 
 
 def validate_new_site(bench: "Bench", name: str, apps: list[str]) -> bool:

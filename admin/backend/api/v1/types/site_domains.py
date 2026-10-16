@@ -14,6 +14,8 @@ class SiteDomain(TypedDict):
 class SiteDomains(TypedDict):
     domains: list[SiteDomain]
     primary: str
+    certificate_email_required: NotRequired[bool]
+    certificate_pending: NotRequired[bool]
 
 
 class DnsRecord(TypedDict):

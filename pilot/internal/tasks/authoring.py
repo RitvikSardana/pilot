@@ -65,12 +65,18 @@ def task_argv_suffix(cls: type[Task], args: dict) -> list[str]:
         if is_positional_arg(arg_field):
             argv += argv_values(value)
         elif strip_optional(arg_field.hint) is bool:
-            if value:
-                argv.append(long_flag(arg_field.name))
+            argv += bool_flag_argv(arg_field, value)
         elif value:
             argv.append(long_flag(arg_field.name))
             argv += argv_values(value)
     return argv
+
+
+def bool_flag_argv(arg_field, value: bool) -> list[str]:
+    """The flag for true, or its --no- form for false when the flag defaults to on."""
+    if value:
+        return [long_flag(arg_field.name)]
+    return [long_flag(f"no_{arg_field.name}")] if arg_field.default is True else []
 
 
 def run_task_main(cls: type[Task]) -> None:

@@ -55,6 +55,12 @@ test('taskScope names the server when a task is not bound to a site', () => {
   })
 })
 
+test('Enable SSL names its site, and bench-wide Let\'s Encrypt names the server', () => {
+  assert.equal(siteLabel({ command: 'setup-letsencrypt', args: { site: 'a.local' } }), 'a.local')
+  assert.equal(siteLabel({ command: 'setup-letsencrypt', args: { site: '' } }), SERVER_SCOPE)
+  assert.equal(siteLabel({ command: 'revert-site', args: { site: 'a.local' } }), 'a.local')
+})
+
 test('site-creating and app tasks redirect to the site page on success', () => {
   assert.deepEqual(redirectRouteOnSuccess({ command: 'new-site', args: { name: 'a.local' } }), {
     name: 'SiteDetail',

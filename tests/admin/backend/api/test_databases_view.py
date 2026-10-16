@@ -899,3 +899,29 @@ def test_a_performance_section_maps_unsupported_engine_to_422(tmp_path: Path) ->
 
     assert response.status_code == 422
     assert response.get_json()["error"]["code"] == "performance_report_unavailable"
+
+
+def test_memory_share_queues_guarded_task(tmp_path: Path) -> None:
+    client = _client(tmp_path / "benches" / "current")
+    actions = Mock()
+    with (
+        patch("admin.backend.api.v1.databases._quick_actions", return_value=actions),
+        patch("admin.backend.api.v1.databases.SetMariaDBMemoryShareTask.queue", return_value="task-5") as queue,
+        patch("admin.backend.api.v1.databases.accepted_task_response", return_value=({"task_id": "task-5"}, 202)),
+    ):
+        response = client.post("/api/v1/database/quick-actions/memory-share", json={"memory_share": 0.6})
+
+    assert response.status_code == 202
+    actions.require_memory_share.assert_called_once_with(0.6)
+    assert queue.call_args.kwargs["memory_share"] == 0.6
+    assert queue.call_args.kwargs["resource_key"] == "database-server"
+
+
+@pytest.mark.parametrize("payload", [{}, {"memory_share": "0.6"}, {"memory_share": True}])
+def test_memory_share_must_be_a_number(tmp_path: Path, payload: dict) -> None:
+    response = _client(tmp_path / "benches" / "current").post(
+        "/api/v1/database/quick-actions/memory-share", json=payload
+    )
+
+    assert response.status_code == 422
+    assert response.get_json()["error"]["code"] == "invalid_memory_share"

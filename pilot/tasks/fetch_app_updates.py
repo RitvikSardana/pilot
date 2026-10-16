@@ -22,12 +22,13 @@ class FetchAppUpdatesTask(Task):
         print(json.dumps(updates), flush=True)
 
     def app_update(self, name: str) -> dict | None:
-        """The pending update for an app as {current, target} labels, or None if up to date."""
+        """The pending update for an app as {current, target} labels and whether it needs a
+        migrate, or None if up to date."""
         app = self.bench.app(name)
         pin = app.update_target()
         if pin is None or app.is_on_revision(pin):
             return None
-        return self._update_labels(app, pin)
+        return {**self._update_labels(app, pin), "has_migrate_changes": app.has_migrate_changes(pin)}
 
     def _update_labels(self, app, pin: RevisionPin) -> dict:
         """Marketplace apps display versions ('15.116.0 -> 15.117.0'); other apps

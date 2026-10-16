@@ -22,6 +22,7 @@ interface AppCardEntry {
   logo_url: string | null
   documentation: string
   website: string
+  missing: boolean
 }
 
 const props = defineProps<Props>()
@@ -31,7 +32,6 @@ const { apps, canDisableApps, installedApps, appsLoading, loadApps, reload } = u
   props.siteName,
 )
 const {
-  registry,
   titleMap,
   descriptionMap,
   logoMap,
@@ -46,25 +46,33 @@ const refresh = async () => {
   await Promise.all([reload(), loadApps()])
 }
 
-// Disabling needs a Frappe that supports it, and an app the catalog can reinstall.
-const canDisable = (app: AppCardEntry | null) => {
-  return (
-    canDisableApps.value && Boolean(app && registry.value.some((entry) => entry.name === app.name))
-  )
-}
-
 const appDetailMap = computed(() => Object.fromEntries(apps.value.map((a) => [a.name, a])))
 
+// Disabling needs a Frappe that supports it, and an app the catalog can reinstall.
+const canDisable = (app: AppCardEntry | null) => {
+  return canDisableApps.value && Boolean(app && appDetailMap.value[app.name]?.is_marketplace)
+}
+
+// Registry metadata describes the listed repository, not a fork with the same name.
+const registryValue = (map: Record<string, string>, name: string) =>
+  appDetailMap.value[name]?.is_marketplace ? map[name] : ''
+
 const appObjects = computed<AppCardEntry[]>(() =>
-  installedApps.value.map((name) => ({
-    name,
-    title: titleMap.value[name] || toSentenceCase(appDetailMap.value[name]?.title) || name,
-    label: appDetailMap.value[name]?.version || '',
-    description: descriptionMap.value[name] || appDetailMap.value[name]?.description || '',
-    logo_url: logoMap.value[name] || null,
-    documentation: documentationMap.value[name] || '',
-    website: websiteMap.value[name] || '',
-  })),
+  installedApps.value.map((name) => {
+    const detail = appDetailMap.value[name]
+    return {
+      name,
+      title: registryValue(titleMap.value, name) || toSentenceCase(detail?.title) || name,
+      label: detail?.missing ? 'Not on bench' : detail?.version || '',
+      description: detail?.missing
+        ? 'The site lists this app, but the bench does not have it. Uninstall removes it from the site.'
+        : registryValue(descriptionMap.value, name) || detail?.description || '',
+      logo_url: registryValue(logoMap.value, name) || null,
+      documentation: registryValue(documentationMap.value, name),
+      website: registryValue(websiteMap.value, name),
+      missing: Boolean(detail?.missing),
+    }
+  }),
 )
 
 const showUninstall = ref(false)

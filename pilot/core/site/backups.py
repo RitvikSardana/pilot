@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from pilot.config.site_backup import clear_retention, read_retention, write_retention
 from pilot.core.site.retention import BackupRetentionPolicy
 from pilot.integrations.s3.backups import OffsiteBackup
+from pilot.internal.atomic_file import exclusive_file_lock
 
 if TYPE_CHECKING:
     from pilot.core.site import Site
@@ -30,28 +31,49 @@ class SiteBackups:
         """Outside private/backups, which Frappe prunes by age and by its backup limit."""
         return self.site.path / "backups"
 
+    @property
+    def runs_lock_path(self) -> Path:
+        """Held while a run moves in or retention deletes runs."""
+        return self.site.path / "backup_runs"
+
     def take(self, with_files: bool = True) -> tuple[str, list[Path]]:
-        """Run `frappe backup` into this directory and return the run it made."""
+        """Run `frappe backup` in its own staging directory and return the run it made."""
+        import tempfile
+
         from pilot.exceptions import BenchError
         from pilot.utils import run_command
 
-        argv = [
-            *self.site.bench.frappe_call,
-            "frappe",
-            "--site",
-            self.site.config.name,
-            "backup",
-            "--backup-path",
-            str(self.directory),
-        ]
-        if with_files:
-            argv.append("--with-files")
-        # cwd matters: frappe's bench helper reads apps.txt from the current dir.
-        run_command(argv, cwd=self.site.bench.sites_path, stream_output=True)
-        timestamp, files = self.latest_run()
-        if not files:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".backup-", dir=self.directory) as staging:
+            argv = [
+                *self.site.bench.frappe_call,
+                "frappe",
+                "--site",
+                self.site.config.name,
+                "backup",
+                "--backup-path",
+                staging,
+            ]
+            if with_files:
+                argv.append("--with-files")
+            # cwd matters: frappe's bench helper reads apps.txt from the current dir.
+            run_command(argv, cwd=self.site.bench.sites_path, stream_output=True)
+            files = self._publish(sorted(Path(staging).iterdir()))
+        timestamp = parse_backup_timestamp(files[0].name) if files else None
+        if not timestamp:
             raise BenchError(f"The backup of {self.site.config.name} produced no files.")
         return timestamp, files
+
+    def _publish(self, staged: list[Path]) -> list[Path]:
+        """Move a run in under the backups lock, so retention sees all of it or none of it."""
+        from pilot.exceptions import BenchError
+
+        with exclusive_file_lock(self.runs_lock_path):
+            if any((self.directory / path.name).exists() for path in staged):
+                raise BenchError(
+                    f"A backup of {self.site.config.name} from the same second already exists. Try again."
+                )
+            return [path.rename(self.directory / path.name) for path in staged]
 
     def fetch_run(self, timestamp: str, destination: Path) -> list[Path]:
         """One run's files on local disk, downloaded into `destination` when only the
@@ -71,19 +93,6 @@ class SiteBackups:
             paths.append(destination / filename)
         return paths
 
-    def latest_run(self) -> tuple[str, list[Path]]:
-        """Timestamp and files of the most recently created backup run for this site."""
-        groups: dict[str, list[Path]] = {}
-        if self.directory.is_dir():
-            for path in self.directory.iterdir():
-                timestamp = parse_backup_timestamp(path.name)
-                if timestamp:
-                    groups.setdefault(timestamp, []).append(path)
-        if not groups:
-            return "", []
-        latest = max(groups)
-        return latest, groups[latest]
-
     def prune(self) -> list[str]:
         """Delete runs rejected by this site's retention policy."""
         config = read_retention(self.site.path / "site_config.json")
@@ -92,12 +101,17 @@ class SiteBackups:
 
         offsite = self._offsite()
         offsite_runs = offsite.list_backups(self.site.config.name) if offsite else {}
-        timestamps = sorted(set(self._local_timestamps()) | set(offsite_runs))
-
         policy = BackupRetentionPolicy(config)
-        return [
-            ts for ts in policy.select_deletions(timestamps) if self._delete_run(offsite, offsite_runs, ts)
-        ]
+        with exclusive_file_lock(self.runs_lock_path):
+            timestamps = sorted(set(self._local_timestamps()) | set(offsite_runs))
+            selected = policy.select_deletions(timestamps)
+
+        # Offsite deletes are network calls, so publishing does not wait on them.
+        deleted = [ts for ts in selected if self._delete_offsite_run(offsite, offsite_runs, ts)]
+        with exclusive_file_lock(self.runs_lock_path):
+            for timestamp in deleted:
+                self._delete_local(timestamp)
+        return deleted
 
     def resolve_file(self, filename: str) -> Path:
         """A path inside this site's own backup directory. These names arrive from API
@@ -150,6 +164,12 @@ class SiteBackups:
         write_retention(self.site.path / "site_config.json", retention)
         return self.schedule()
 
+    def move_schedule(self, old_name: str) -> None:
+        """Carry a renamed site's backup schedule over from its old name."""
+        from pilot.managers.cron import CronManager
+
+        CronManager(self.site.bench.path).move_schedule(old_name, self.site.config.name, self._cron_command())
+
     def clear_schedule(self) -> None:
         from pilot.managers.cron import CronManager
 
@@ -159,15 +179,14 @@ class SiteBackups:
     def retention_from_payload(self, block: dict | None):
         return retention_from_payload(block)
 
-    def _delete_run(self, offsite, offsite_runs: dict, timestamp: str) -> bool:
-        """Delete one run offsite first; keep local files if offsite deletion fails."""
+    def _delete_offsite_run(self, offsite, offsite_runs: dict, timestamp: str) -> bool:
+        """Delete one run offsite. False when that fails, so its local files stay."""
         if timestamp in offsite_runs:
             try:
                 self._delete_offsite(offsite, timestamp, offsite_runs[timestamp])
             except Exception as error:
                 print(f"Kept backup {timestamp}: offsite delete failed: {error}")
                 return False
-        self._delete_local(timestamp)
         return True
 
     def _local_timestamps(self) -> list[str]:

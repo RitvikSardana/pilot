@@ -25,6 +25,7 @@ SUDO_PASS="${SUDO_PASS:-}"
 DEV_MODE="${PILOT_DEV:-}"
 
 MARIADB_REPO_SETUP_URL="https://r.mariadb.com/downloads/mariadb_repo_setup"
+FLUENT_BIT_REPO="https://packages.fluentbit.io"
 # Match the runtime's own defaults (MariaDBManager/PostgresManager).
 MARIADB_VERSION="11.8"
 POSTGRES_VERSION="16"
@@ -251,8 +252,30 @@ add_distro_repos() {
         debian|ubuntu)
             fetch_and_run_as_root "$MARIADB_REPO_SETUP_URL" \
                 --mariadb-server-version="mariadb-$MARIADB_VERSION" \
-                --skip-maxscale;;
+                --skip-maxscale
+            add_fluent_bit_repo ;;
     esac
+}
+
+# Debian/Ubuntu do not package Fluent Bit, which ships the bench logs to Datum.
+add_fluent_bit_repo() {
+    # shellcheck disable=SC1091
+    codename=$(. /etc/os-release; echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+    repo="$FLUENT_BIT_REPO/$DISTRO/$codename"
+    # A release without packages would fail the apt-get update every other package needs.
+    if ! curl -fsI "$repo/dists/$codename/InRelease" >/dev/null 2>&1; then
+        echo "Warning: Fluent Bit has no packages for $DISTRO $codename, so bench logs are not shipped."
+        return 0
+    fi
+
+    # Staged files, not a pipe: run_sudo may feed the sudo password on stdin.
+    key="$(mktemp)"
+    list="$(mktemp)"
+    curl -fsSL --proto '=https' --tlsv1.2 "$FLUENT_BIT_REPO/fluentbit.key" -o "$key"
+    echo "deb [signed-by=/etc/apt/keyrings/fluentbit.asc] $repo $codename main" > "$list"
+    run_sudo install -D -m 644 "$key" /etc/apt/keyrings/fluentbit.asc
+    run_sudo install -m 644 "$list" /etc/apt/sources.list.d/fluent-bit.list
+    rm -f "$key" "$list"
 }
 
 # One MariaDB, PostgreSQL and Redis per bench user (rootless, systemctl --user),
@@ -281,7 +304,9 @@ install_production_packages() {
             waf=$(waf_packages)
             [ -n "$waf" ] || echo "Warning: the nginx ModSecurity module is not packaged for this release, so the WAF is unavailable."
             # shellcheck disable=SC2086
-            pkg_install nginx certbot supervisor $waf ;;
+            pkg_install nginx certbot supervisor $waf
+            # The bench user cannot sudo apt, so `pilot setup telemetry` relies on this install.
+            if pkg_available fluent-bit; then pkg_install fluent-bit; fi ;;
         arch)   pkg_install nginx certbot supervisor ;;
     esac
 }
@@ -442,6 +467,18 @@ create_bench_user() {
     echo "Creating user '$1'..."
     useradd -m -s /bin/bash "$1"
     usermod -aG "$(admin_group)" "$1" 2>/dev/null || true
+    add_user_bus_env "$1"
+}
+
+# `su` and `sudo -iu` open no login session, so `systemctl --user` finds no
+# runtime directory or D-Bus socket without these.
+add_user_bus_env() {
+    rc="$(getent passwd "$1" | cut -d: -f6)/.bashrc"
+    cat >>"$rc" <<'EOF'
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+EOF
+    chown "$1:" "$rc"
 }
 
 # Bench services are `systemctl --user` units, which need this user's systemd
@@ -551,6 +588,55 @@ install_sudoers_grants() {
 "$1 ALL=(ALL) NOPASSWD: $certbot_bin,$mkdir_bin,$test_bin,$openssl_bin"
 }
 
+# Asset builds of large frontends need more memory than a small host without swap
+# has. The bench user may add this swap file for the length of a build; the count
+# lets concurrent builds share it, and a reboot (the file is not in fstab) resets it.
+install_build_swap_helper() {
+    [ "$(uname)" = "Linux" ] || return 0
+    command -v swapon >/dev/null 2>&1 || return 0
+    helper=/usr/local/sbin/pilot-build-swap
+    cat > "$helper" <<'HELPER'
+#!/bin/sh
+set -eu
+dir=/var/lib/pilot
+swapfile=$dir/build.swap
+size_mb=2048
+mkdir -p "$dir"
+exec 9>"$dir/build-swap.lock"
+flock 9
+active() { grep -q "^$swapfile " /proc/swaps; }
+count=$(cat "$dir/build-swap.count" 2>/dev/null || echo 0)
+active || count=0
+case "${1:-}" in
+on)
+    echo $((count + 1)) > "$dir/build-swap.count"
+    [ "$count" -eq 0 ] || exit 0
+    [ "$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)" -eq 0 ] || exit 0
+    if [ "$(df -Pm "$dir" | awk 'NR == 2 {print $4}')" -lt $((size_mb + 1024)) ]; then
+        echo "Not enough free disk for the build swap file." >&2
+        exit 0
+    fi
+    fallocate -l "${size_mb}M" "$swapfile" 2>/dev/null || dd if=/dev/zero of="$swapfile" bs=1M count="$size_mb" status=none
+    chmod 600 "$swapfile"
+    mkswap "$swapfile" >/dev/null
+    swapon --priority -10 "$swapfile"
+    ;;
+off)
+    if [ "$count" -gt 0 ]; then count=$((count - 1)); fi
+    echo "$count" > "$dir/build-swap.count"
+    if [ "$count" -eq 0 ] && active; then swapoff "$swapfile"; fi
+    if [ "$count" -eq 0 ]; then rm -f "$swapfile"; fi
+    ;;
+*)
+    echo "usage: pilot-build-swap on|off" >&2
+    exit 2
+    ;;
+esac
+HELPER
+    chmod 755 "$helper"
+    write_sudoers_file "$1-pilot-build-swap" "$1 ALL=(root) NOPASSWD: $helper on,$helper off"
+}
+
 # A malformed file in /etc/sudoers.d breaks sudo for every user, including the
 # recovery path, so validate before installing. sudo-rs (Ubuntu 26.04) rejects
 # wildcards in arguments; the optional third grant names the same commands bare.
@@ -579,6 +665,7 @@ prepare_host() {
     set_nginx_worker_user "$BENCH_USER"
     install_logrotate "$BENCH_USER"
     install_sudoers_grants "$BENCH_USER"
+    install_build_swap_helper "$BENCH_USER"
 
     echo ""
     echo "========================================================================"
@@ -736,19 +823,7 @@ ensure_admin_venv() {
     [ -f "$admin_venv/bin/python" ] && return 0
     echo "Setting up admin environment..."
     uv venv "$admin_venv" --quiet
-    if command -v python3 >/dev/null 2>&1; then
-        admin_deps=$(python3 -c "
-import tomllib
-with open('$PILOT_DIR/pyproject.toml', 'rb') as f:
-    project = tomllib.load(f)
-print(' '.join(project.get('project', {}).get('optional-dependencies', {}).get('admin', [])))
-" 2>/dev/null)
-    fi
-    if [ -z "$admin_deps" ]; then
-        admin_deps="flask>=3.0 psutil>=5.9 pymysql>=1.1 gunicorn>=21.2 pyjwt[crypto]>=2.8"
-    fi
-    # shellcheck disable=SC2086 # admin_deps is a space-separated list
-    uv pip install --python "$admin_venv/bin/python" --quiet $admin_deps
+    uv pip install --python "$admin_venv/bin/python" --quiet -r "$PILOT_DIR/pyproject.toml" --extra admin
     echo "Admin environment ready."
 }
 

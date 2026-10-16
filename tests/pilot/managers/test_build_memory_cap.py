@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -193,3 +194,52 @@ def test_an_operator_node_heap_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
     env = _build_env(monkeypatch, NODE_OPTIONS="--max-old-space-size=3000")
 
     assert env["NODE_OPTIONS"] == "--max-old-space-size=3000"
+
+
+def test_a_capped_compiler_error_names_the_compiler(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failed(argv, **kwargs):
+        raise CommandError("Command 'systemd-run' failed with exit code 1.", returncode=1)
+
+    _host(monkeypatch, reads_memory=True, caps_memory=True)
+    monkeypatch.setattr(python_assets, "run_command", failed)
+    with pytest.raises(CommandError, match="Command 'yarn' failed with exit code 1"):
+        _builder().run_compiler(["yarn", "build"])
+
+
+@pytest.mark.parametrize("trial_exit_code, expected", [(0, True), (1, False)])
+def test_memory_is_capped_only_where_a_trial_scope_starts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, trial_exit_code: int, expected: bool
+) -> None:
+    """Without a user bus, systemd-run exits 1 before the build starts, so every build would fail."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from pilot.managers import systemd_user
+
+    controllers = tmp_path / "cgroup.controllers"
+    controllers.write_text("cpu memory pids")
+    monkeypatch.setattr(systemd_user, "Path", lambda _path: controllers)
+    monkeypatch.setattr(systemd_user.shutil, "which", lambda _name: "/usr/bin/systemd-run")
+    trials: list[list[str]] = []
+
+    def trial(argv, **kwargs):
+        trials.append(argv)
+        return SimpleNamespace(returncode=trial_exit_code)
+
+    monkeypatch.setattr(subprocess, "run", trial)
+
+    assert systemd_user.can_cap_memory() is expected
+    assert trials[0][0] == "systemd-run"
+    assert trials[0][-1] == "true"
+
+
+@pytest.mark.parametrize("error", [OSError("sudo missing"), subprocess.TimeoutExpired("sudo", 120)])
+def test_a_failing_swap_helper_only_warns(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    """Swap is optional, so the build must not fail when the helper cannot run."""
+
+    def raise_error(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(build_memory.subprocess, "run", raise_error)
+
+    assert build_memory._has_switched_build_swap("on") is False

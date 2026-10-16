@@ -689,7 +689,7 @@ def test_requirements_skips_app_without_python_setup_files(tmp_path: Path) -> No
 
     with (
         patch("pilot.managers.environment.ensure_uv", return_value="uv"),
-        patch("pilot.utils.run_command") as mock_rc,
+        patch("pilot.managers.environment.run_command") as mock_rc,
     ):
         BenchRuntime(bench)._install_python_requirements(lambda _message: None)
         mock_rc.assert_not_called()
@@ -707,7 +707,7 @@ def test_requirements_installs_app_with_pyproject_toml(tmp_path: Path) -> None:
 
     with (
         patch("pilot.managers.environment.ensure_uv", return_value="uv"),
-        patch("pilot.utils.run_command") as mock_rc,
+        patch("pilot.managers.environment.run_command") as mock_rc,
     ):
         BenchRuntime(bench)._install_python_requirements(lambda _message: None)
         mock_rc.assert_called_once()
@@ -725,7 +725,7 @@ def test_requirements_installs_app_with_setup_py(tmp_path: Path) -> None:
 
     with (
         patch("pilot.managers.environment.ensure_uv", return_value="uv"),
-        patch("pilot.utils.run_command") as mock_rc,
+        patch("pilot.managers.environment.run_command") as mock_rc,
     ):
         BenchRuntime(bench)._install_python_requirements(lambda _message: None)
         mock_rc.assert_called_once()
@@ -974,16 +974,15 @@ def test_drop_site_removes_from_toml_when_no_sites_key(tmp_path: Path) -> None:
     site._remove_from_bench_toml()  # no raise
 
 
-def test_restart_dev_bench_prints_guidance(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+def test_restart_dev_bench_fails_with_guidance(tmp_path: Path) -> None:
     from pilot.commands.runtime.restart import RestartCommand
 
     bench = make_bench(tmp_path)  # production disabled by default
-    RestartCommand(bench).run()
-    out = capsys.readouterr().out
-    assert "only for production benches" in out
+    with pytest.raises(BenchError, match="only for production benches"):
+        RestartCommand(bench).run()
 
 
-def test_restart_production_incomplete_prints_repair(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+def test_restart_production_incomplete_fails_with_repair(tmp_path: Path) -> None:
     from pilot.commands.runtime.restart import RestartCommand
 
     bench = make_bench(tmp_path)
@@ -993,9 +992,8 @@ def test_restart_production_incomplete_prints_repair(tmp_path: Path, capsys: pyt
         mgr = MagicMock()
         mgr.is_configured.return_value = False
         create.return_value = mgr
-        RestartCommand(bench).run()
-    out = capsys.readouterr().out
-    assert "deployment is incomplete" in out
+        with pytest.raises(BenchError, match="deployment is incomplete"):
+            RestartCommand(bench).run()
     mgr.restart.assert_not_called()
 
 
@@ -1309,8 +1307,25 @@ def test_drop_bench_deletes_directory_with_no_sites(tmp_path: Path) -> None:
     bench_dir.mkdir(parents=True)
     bench = Bench(_drop_config("one"), bench_dir)
 
-    DropBenchCommand(bench, skip_confirm=True).run()
+    with patch("pilot.managers.processes.local._tcp_port_open", return_value=False):
+        DropBenchCommand(bench, skip_confirm=True).run()
     assert not bench_dir.exists()
+
+
+def test_drop_bench_refuses_while_the_dev_bench_runs(tmp_path: Path) -> None:
+    """A running setup wizard has no pid file, only its admin port."""
+    from pilot.commands.bench.delete import DropBenchCommand
+
+    bench_dir = tmp_path / "benches" / "one"
+    bench_dir.mkdir(parents=True)
+    bench = Bench(_drop_config("one"), bench_dir)
+
+    with (
+        patch("pilot.managers.processes.local._tcp_port_open", return_value=True),
+        pytest.raises(BenchError, match="pilot -b one stop"),
+    ):
+        DropBenchCommand(bench, skip_confirm=True).run()
+    assert bench_dir.exists()
 
 
 def test_build_admin_rejects_old_node(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1466,3 +1481,18 @@ def test_new_app_reloads_workers_so_sites_can_import_it(tmp_path: Path) -> None:
 
     mock_new_app.assert_called_once()
     mock_reload.assert_called_once()
+
+
+def test_list_site_apps_marks_apps_the_bench_does_not_have(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    from pilot.commands.sites.list_apps import ListSiteAppsCommand
+
+    bench = make_bench(tmp_path)
+    bench.create_directories()
+    (bench.apps_path / "frappe" / ".git").mkdir(parents=True)
+
+    with patch("pilot.core.site.Site.active_apps", return_value=["frappe", "commera"]):
+        ListSiteAppsCommand(bench, site_name="site1.localhost").run()
+
+    output = capsys.readouterr()
+    assert output.out.splitlines() == ["frappe", "commera"]
+    assert "commera is not on this bench" in output.err

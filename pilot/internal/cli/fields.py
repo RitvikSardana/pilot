@@ -47,9 +47,10 @@ def add_argument(parser: argparse.ArgumentParser, arg_field: ArgField) -> None:
         parser.add_argument(arg_field.name, nargs=argparse.REMAINDER, **kwargs)
         return
     if base_hint is bool:
+        # A flag that defaults to on needs a --no- form, or it can never be turned off.
         parser.add_argument(
             *option_flags(arg_field),
-            action="store_true",
+            action=argparse.BooleanOptionalAction if arg_field.default is True else "store_true",
             default=arg_field.default,
             **kwargs,
         )
