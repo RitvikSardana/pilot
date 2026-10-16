@@ -10,7 +10,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-from pilot.core.app.node_packages import YARN
+from pilot.core.app.node_packages import get_app_packages
 from pilot.core.app.prebuilt_assets import asset_build_dirs, build_output_paths
 from pilot.core.bench.artifacts import BenchArtifacts
 from pilot.exceptions import CommandError
@@ -37,7 +37,7 @@ class BuildArtifacts:
         digest.update(
             json.dumps({key: config.get(key) for key in ("developer_mode", "esbuild_target")}).encode()
         )
-        for executable in ("node", YARN.bin, str(self.bench.python)):
+        for executable in ("node", *self.get_package_manager_binaries(), str(self.bench.python)):
             digest.update(run_command([executable, "--version"]).stdout)
         digest.update(
             run_command(
@@ -56,6 +56,16 @@ class BuildArtifacts:
                 return None
             digest.update(key.encode())
         return digest.hexdigest()
+
+    def get_package_manager_binaries(self) -> list[str]:
+        managers = {
+            package.package_manager
+            for app in self.bench.apps()
+            for package in get_app_packages(
+                app.path, [app.path / directory for directory in asset_build_dirs(app)]
+            )
+        }
+        return [manager.bin for manager in sorted(managers, key=lambda manager: manager.name)]
 
     @staticmethod
     def get_app_key(app) -> str | None:

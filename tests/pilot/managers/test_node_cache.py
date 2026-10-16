@@ -35,6 +35,26 @@ def capture_install(source, cache):
     cache.capture(source)
 
 
+@pytest.mark.parametrize("target_kind", ["external", "dangling", "loop", "modules"])
+def test_dependency_copy_rejects_linked_installs(install, target_kind):
+    source, target, _cache = install
+    modules = source / "node_modules"
+    if target_kind == "modules":
+        moved = source / "shared-modules"
+        modules.rename(moved)
+        modules.symlink_to(moved, target_is_directory=True)
+    else:
+        targets = {
+            "external": source / "package.json",
+            "dangling": source / "missing",
+            "loop": modules / "linked",
+        }
+        (modules / "linked").symlink_to(targets[target_kind])
+    (modules / ".pilot-install-key").write_text(NodeDependencies.get_key(source))
+    assert not NodeDependencies.copy(source, target)
+    assert not (target / "node_modules").exists()
+
+
 @pytest.mark.parametrize("failure", ["directory", "copy", "rename"])
 def test_cache_storage_failure_preserves_completed_install(install, monkeypatch, caplog, failure):
     from pathlib import Path

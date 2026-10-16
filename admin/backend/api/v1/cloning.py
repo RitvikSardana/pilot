@@ -8,6 +8,7 @@ from flask import current_app, jsonify, request
 from admin.backend.api.responses import accepted_task_response, error_response
 from admin.backend.api.v1.benches.support import BENCH_NAME_RE, guard_bench_management, target_bench_dir
 from admin.backend.api.v1.sites.shared import host_resource_key, task_failure
+from admin.backend.providers.apps import AppProvider
 from pilot.config import BenchConfig
 from pilot.core.bench import Bench
 from pilot.core.bench.cloning.branches import validate_branches
@@ -27,7 +28,12 @@ def clone_branch_options(name: str):
         if not (path / "bench.toml").is_file():
             return error_response("bench_not_found", "Source bench not found.", 404)
         source = Bench(path)
-        return jsonify({"apps": source.get_clone_branch_options()})
+        apps = source.get_clone_branch_options()
+        provider = AppProvider(path)
+        for app in apps:
+            title, _description = provider.get_pyproject_meta(path / "apps" / app["name"], app["name"])
+            app["title"] = title or app["name"]
+        return jsonify({"apps": apps})
     except BenchError as error:
         return error_response("clone_branches_unavailable", str(error), 422)
     except ValueError:

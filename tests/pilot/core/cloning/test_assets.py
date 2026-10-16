@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -178,6 +179,32 @@ def test_default_clone_reuses_matching_build_without_sharing_writable_artifacts(
     git(app, "push", "origin", "HEAD:main")
     source.clone("changed", lambda message: None)
     assert len(builds) == 1
+
+
+def test_pnpm_build_cache_does_not_require_yarn(source, monkeypatch):
+    from pilot.core.app.node_packages import NodePackageManager
+    from pilot.core.bench.build_artifacts import BuildArtifacts
+
+    app = source.apps_path / "frappe"
+    (app / "package.json").write_text("{}")
+    (app / "yarn.lock").unlink(missing_ok=True)
+    (app / "pnpm-lock.yaml").write_text('lockfileVersion: "9.0"\n')
+    requested = []
+
+    def binary(manager):
+        requested.append(manager.name)
+        assert manager.name != "yarn"
+        return "pnpm"
+
+    monkeypatch.setattr(NodePackageManager, "bin", property(binary))
+    PythonEnvManager(source).create_venv()
+    source.write_common_site_config()
+    monkeypatch.setattr(
+        "pilot.core.bench.build_artifacts.run_command",
+        lambda *args, **kwargs: SimpleNamespace(stdout=b"version"),
+    )
+    assert BuildArtifacts(source).get_key() is not None
+    assert requested == ["pnpm"]
 
 
 def test_build_cache_rejects_changed_build_mode_environment_and_custom_hooks(source, monkeypatch):

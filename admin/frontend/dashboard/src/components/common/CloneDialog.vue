@@ -102,7 +102,7 @@ const submit = async () => {
         {{
           isSite
             ? 'Create a fresh copy of this site for testing or UAT.'
-            : 'Copy this bench’s apps and dependencies into a new development bench.'
+            : 'Copy this bench’s apps and dependencies into a new bench.'
         }}
       </p>
 
@@ -156,7 +156,7 @@ const submit = async () => {
             :key="app.name"
             v-model="appBranches[app.name]"
             type="select"
-            :label="app.name"
+            :label="app.title || app.name"
             :disabled="submitting"
             :options="app.branches.map((branch) => ({ label: branch, value: branch }))"
           />

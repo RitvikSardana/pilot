@@ -46,11 +46,15 @@ def test_clone_bench_queues_a_real_task(cloning_client):
     assert not (bench.path.parent / "uat").exists()
 
 
-def test_clone_branch_options_read_the_selected_source_bench(cloning_client, monkeypatch):
+@pytest.mark.parametrize("title", ["Frappe Framework", ""])
+def test_clone_branch_options_read_the_selected_source_bench(cloning_client, monkeypatch, title):
     client, bench = cloning_client
     other = bench.path.parent / "other"
     other.mkdir()
     BenchConfig.default("other", benches_root=other.parent).write(other)
+    app_path = other / "apps" / "frappe"
+    app_path.mkdir(parents=True)
+    (app_path / "pyproject.toml").write_text(f'[project]\nname = "{title}"\n')
     observed = []
 
     def options(self):
@@ -61,6 +65,7 @@ def test_clone_branch_options_read_the_selected_source_bench(cloning_client, mon
     response = client.get("/api/v1/benches/other/clone-branch-options")
     assert response.status_code == 200
     assert response.get_json()["apps"][0]["default_branch"] == "develop"
+    assert response.get_json()["apps"][0]["title"] == (title or "frappe")
     assert observed == [other]
 
 

@@ -161,13 +161,7 @@ def test_postgres_clone_uses_resolved_client_binaries(source, monkeypatch):
     assert streams[0][1][0] == "/brew/bin/psql"
 
 
-@pytest.mark.parametrize(
-    "unsupported", [None, "relationships", "view", "engine", "small", "escaped", "probe"]
-)
-def test_mariadb_clone_parallel_schema_then_single_snapshot_or_full_fallback(
-    source, monkeypatch, unsupported
-):
-    tables = [f"table_{index}" for index in range(16)]
+def mariadb_clone_metadata(tables, unsupported):
     rows = [
         f"{name}\tBASE TABLE\t{'MyISAM' if index == 0 else 'InnoDB'}" for index, name in enumerate(tables)
     ]
@@ -180,7 +174,17 @@ def test_mariadb_clone_parallel_schema_then_single_snapshot_or_full_fallback(
         rows = rows[:15]
     elif unsupported == "escaped":
         rows[0] = "table\\tname\tBASE TABLE\tInnoDB"
-    metadata = "\n".join(["1" if unsupported == "relationships" else "0", *rows]).encode()
+    return "\n".join(["1" if unsupported == "relationships" else "0", *rows]).encode()
+
+
+@pytest.mark.parametrize(
+    "unsupported", [None, "relationships", "view", "engine", "small", "escaped", "probe"]
+)
+def test_mariadb_clone_parallel_schema_then_single_snapshot_or_full_fallback(
+    source, monkeypatch, unsupported
+):
+    tables = [f"table_{index}" for index in range(16)]
+    metadata = mariadb_clone_metadata(tables, unsupported)
 
     def probe(*args, **kwargs):
         if unsupported == "probe":

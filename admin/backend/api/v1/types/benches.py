@@ -29,6 +29,7 @@ class BenchReadiness(TypedDict):
 
 class CloneAppBranches(TypedDict):
     name: str
+    title: str
     default_branch: str
     branches: list[str]
 

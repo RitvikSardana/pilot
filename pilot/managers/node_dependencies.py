@@ -94,7 +94,12 @@ class NodeDependencies:
 
     @classmethod
     def copy(cls, source: Path, destination: Path) -> bool:
+        from pilot.managers.node_cache import NodeDependencyCache
+
         if not cls.has_portable_inputs(source, destination):
+            return False
+        modules = source / "node_modules"
+        if modules.is_symlink() or not NodeDependencyCache.has_internal_links(modules, modules):
             return False
         source_key, target_key = cls.get_key(source), cls.get_key(destination)
         if not cls.has_matching_install(source, source_key):
