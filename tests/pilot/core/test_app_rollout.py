@@ -189,9 +189,11 @@ def test_a_damaged_rollout_number_does_not_fail_the_update_log(
 def _repository(release: dict | None, is_offered: bool) -> AppRepository:
     app = MagicMock()
     app.config.branch = "main"
+    app.config.follow_branch = False
     app.bench.app_rollout.is_offered.return_value = is_offered
     repository = AppRepository(app)
-    repository.forward_release = MagicMock(return_value=release)
+    repository.newest_release = MagicMock(return_value=release)
+    repository._is_ahead_of_installed = MagicMock(return_value=True)
     return repository
 
 
