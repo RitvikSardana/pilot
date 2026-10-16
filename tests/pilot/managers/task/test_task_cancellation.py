@@ -260,3 +260,13 @@ def test_cancel_fails_closed_for_malformed_process_identity(
 
     assert store.read_status(TASK_ID) == TaskStatus.RUNNING
     assert (task_dir / "process.json").exists()
+
+
+def test_a_task_claimed_by_a_worker_that_stopped_before_starting_it_is_interrupted(tmp_path: Path) -> None:
+    store = create_running_task(tmp_path)
+    assert not (store.task_dir(TASK_ID) / "process.json").exists()
+
+    assert TaskProcess(tmp_path).reconcile() is None
+
+    assert store.read_status(TASK_ID) == TaskStatus.FAILED
+    assert store.read_metadata(TASK_ID)["failure"] == {"code": "task_interrupted"}

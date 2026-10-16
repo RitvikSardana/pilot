@@ -1,12 +1,13 @@
 import {
   CloudSettingsError,
+  getAccountUrl,
   getBilling,
   getDomains,
   getMarketplaceApps,
   getTask,
 } from '@frappe/cloud-sdk/api'
 import { reactive } from 'vue'
-import type { BillingSummary, CloudContext, Domains, Marketplace, CloudSettingsTranslator } from '@frappe/cloud-sdk'
+import type { AccountLinks, BillingSummary, CloudContext, Domains, Marketplace, CloudSettingsTranslator } from '@frappe/cloud-sdk'
 import { translate, useTranslation } from './translation'
 import { toast } from 'frappe-ui'
 
@@ -122,6 +123,9 @@ export const rememberTask = (site: string, name: string, task?: RememberedTask) 
 export const createStore = (context?: CloudContext, translator: CloudSettingsTranslator = translate) => {
   const state = reactive({
     context: context || { enabled: false },
+    // Loaded before a click, because a browser blocks a tab opened after an await.
+    accountLinks: null as AccountLinks | null,
+    accountLinksError: '',
     billing: null as BillingSummary | null,
     billingError: '',
     marketplace: null as Marketplace | null,
@@ -129,6 +133,18 @@ export const createStore = (context?: CloudContext, translator: CloudSettingsTra
     domains: null as Domains | null,
     domainsError: '',
   })
+
+  const loadAccountLinks = async () => {
+    state.accountLinksError = ''
+
+    if (state.accountLinks) return
+
+    try {
+      state.accountLinks = await getAccountUrl()
+    } catch (exception) {
+      state.accountLinksError = getErrorMessage(exception, undefined, translator)
+    }
+  }
 
   const loadBilling = async (force = false) => {
     state.billingError = ''
@@ -168,6 +184,7 @@ export const createStore = (context?: CloudContext, translator: CloudSettingsTra
 
   return {
     state,
+    loadAccountLinks,
     loadBilling,
     loadMarketplace,
     loadDomains,

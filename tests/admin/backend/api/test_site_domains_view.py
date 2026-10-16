@@ -125,6 +125,7 @@ def test_list_domains_reports_public_tls_per_hostname(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert [row["tls"] for row in response.get_json()["domains"]] == [True, True]
+    assert response.get_json()["certificate_pending"] is False
 
 
 def test_get_domain_reports_a_custom_domain(tmp_path: Path) -> None:
@@ -240,3 +241,37 @@ def test_domain_routes_reject_missing_site(tmp_path: Path) -> None:
         _request(client, "delete", "/api/v1/sites/missing.localhost/domains/custom.example.com").status_code
         == 404
     )
+
+
+def test_adding_a_domain_rejects_an_invalid_certificate_email_before_attaching(tmp_path: Path) -> None:
+    bench_root = tmp_path / "benches" / "current"
+    _make_site(bench_root, "site.example.com", ssl=True)
+    client = _client(bench_root)
+
+    with patch("pilot.core.site.domains.SiteDomains.register") as register:
+        response = client.post(
+            "/api/v1/sites/site.example.com/domains", json={"domain": "shop.example.com", "email": "not-an-email"}
+        )
+
+    assert response.status_code == 422
+    assert response.get_json()["error"]["details"] == {"needs_email": True}
+    register.assert_not_called()
+
+
+def test_adding_a_domain_with_an_email_passes_it_to_the_certificate_task(tmp_path: Path) -> None:
+    bench_root = tmp_path / "benches" / "current"
+    _make_site(bench_root, "site.example.com", ssl=True)
+    client = _client(bench_root)
+
+    with (
+        patch("pilot.core.site.domains.SiteDomains.register"),
+        patch("pilot.core.site.domains.SiteDomains.apply_task", return_value="task-1") as apply_task,
+        patch("admin.backend.api.v1.sites.domains.accepted_task_response", return_value=("", 202)),
+    ):
+        response = client.post(
+            "/api/v1/sites/site.example.com/domains",
+            json={"domain": "shop.example.com", "email": "ops@example.com"},
+        )
+
+    assert response.status_code == 202
+    apply_task.assert_called_once_with(email="ops@example.com")

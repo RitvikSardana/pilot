@@ -256,6 +256,54 @@ const runSizingAction = async () => {
   }
 }
 
+const memoryShare = computed(() => capabilities.value?.actions.memory_share ?? null)
+const memorySplitOpen = ref(false)
+const memorySplitPercent = ref(50)
+const memorySplitIdempotencyKey = ref('')
+
+const formatGB = (mb: number) => `${(mb / 1024).toFixed(1)} GB`
+const sharePercent = (share: number) => Math.round(share * 100)
+
+const memorySplitDescription = computed(() => {
+  const capability = memoryShare.value
+  if (!capability?.available || capability.current == null || !capability.total_memory_mb) {
+    return capability?.reason || 'Choose how much memory the database may use.'
+  }
+  const database = sharePercent(capability.current)
+  return `Apps ${100 - database}% · Database ${database}% of ${formatGB(capability.total_memory_mb)}`
+})
+
+const memorySplitStep = computed(() =>
+  memoryShare.value?.steps.find((step) => sharePercent(step.share) === memorySplitPercent.value),
+)
+
+const openMemorySplit = () => {
+  const capability = memoryShare.value
+  if (!capability?.available || capability.current == null) return
+  actionError.value = ''
+  memorySplitPercent.value = sharePercent(capability.current)
+  memorySplitIdempotencyKey.value = idempotencyKey('memory-share')
+  memorySplitOpen.value = true
+}
+
+const applyMemorySplit = async () => {
+  if (activeAction.value) return
+  activeAction.value = 'memory_share'
+  actionError.value = ''
+  try {
+    const task = await databaseApi.quickActions.setMemoryShare(
+      memorySplitPercent.value / 100,
+      memorySplitIdempotencyKey.value,
+    )
+    memorySplitOpen.value = false
+    openTaskDetailPage(router, task.task_id)
+  } catch (e) {
+    actionError.value = errorMessage(e, 'Could not change the memory split.')
+  } finally {
+    activeAction.value = ''
+  }
+}
+
 const openBinlogs = () => {
   router.push('/database/analyzer')
 }
@@ -348,6 +396,15 @@ onMounted(load)
       />
     </SettingsRow>
 
+    <SettingsRow class="!ps-0" label="Memory split" :description="memorySplitDescription">
+      <Button
+        variant="ghost"
+        icon="lucide-pencil"
+        :disabled="!memoryShare?.available || Boolean(activeAction)"
+        @click="openMemorySplit"
+      />
+    </SettingsRow>
+
     <SettingsRow
       class="!ps-0"
       label="Manage Binlogs"
@@ -394,6 +451,63 @@ onMounted(load)
         </Button>
       </div>
     </template>
+  </Dialog>
+
+  <Dialog v-model="memorySplitOpen" title="Memory split" size="sm">
+    <div v-if="memoryShare?.total_memory_mb" class="space-y-4">
+      <p class="text-ink-gray-7 text-p-sm">
+        Choose how much memory the database may use. The rest stays for web, workers and Redis.
+      </p>
+
+      <input
+        v-model.number="memorySplitPercent"
+        type="range"
+        class="w-full accent-[var(--surface-gray-7)]"
+        :min="sharePercent(memoryShare.min ?? 0.2)"
+        :max="sharePercent(memoryShare.max ?? 0.8)"
+        step="5"
+        aria-label="Database share of host memory"
+      />
+      <div class="flex justify-between text-ink-gray-6 text-sm">
+        <span>
+          Apps {{ formatGB((memoryShare.total_memory_mb * (100 - memorySplitPercent)) / 100) }}
+        </span>
+        <span>
+          Database {{ formatGB((memoryShare.total_memory_mb * memorySplitPercent) / 100) }}
+        </span>
+      </div>
+
+      <div v-if="memorySplitStep" class="text-ink-gray-7 text-sm divide-y divide-outline-alpha-gray-1">
+        <div class="flex justify-between py-1.5">
+          <span>InnoDB buffer pool</span>
+          <span>{{ memorySplitStep.innodb_buffer_pool_mb }} MB</span>
+        </div>
+        <div class="flex justify-between py-1.5">
+          <span>Database memory limit (MemoryMax)</span>
+          <span>{{ memorySplitStep.memory_max_mb }} MB</span>
+        </div>
+      </div>
+
+      <p class="text-ink-gray-5 text-p-xs">
+        Applies now. A larger buffer pool than the running server allows takes effect at its next
+        restart.
+      </p>
+
+      <ErrorMessage v-if="actionError" :message="actionError" />
+      <div class="flex justify-end gap-2">
+        <Button variant="ghost" :disabled="Boolean(activeAction)" @click="memorySplitOpen = false">
+          Cancel
+        </Button>
+        <Button
+          variant="solid"
+          :loading="activeAction === 'memory_share'"
+          :disabled="sharePercent(memoryShare.current ?? 0) === memorySplitPercent"
+          @click="applyMemorySplit"
+        >
+          Apply
+        </Button>
+      </div>
+    </div>
   </Dialog>
 
   <Dialog v-model="sizingOpen" :title="sizingTitle" size="sm">

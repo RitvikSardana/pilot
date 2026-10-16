@@ -16,8 +16,16 @@ def bench(tmp_path: Path) -> SimpleNamespace:
 def test_tasks_start_persists_running_intent(
     tmp_path: Path,
     capsys,
+    monkeypatch,
 ) -> None:
+    from pilot.managers.task.control import TaskWorkerControl
+
+    woken: list[Path] = []
+    monkeypatch.setattr(TaskWorkerControl, "wake", lambda self: woken.append(self._bench_root))
+
     StartTaskWorkerCommand(bench(tmp_path)).run()
+
+    assert woken == [tmp_path]
 
     assert WorkerStore(tmp_path).read_intent() == WorkerIntent.RUNNING
     assert capsys.readouterr().out == "Task worker start requested.\n"

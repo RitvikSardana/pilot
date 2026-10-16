@@ -14,6 +14,7 @@ class UninstallAppTask(Task):
     site: str
     app: str
     force: bool = False
+    remove_from_bench: bool = True
 
     def run(self) -> None:
         self.uninstall()
@@ -22,7 +23,9 @@ class UninstallAppTask(Task):
     def uninstall(self) -> None:
         site = self.bench.site(self.site)
         with site.under_maintenance():
-            site.uninstall_apps([self.app], force=self.force, on_progress=self.report)
+            site.uninstall_apps(
+                [self.app], force=self.force, on_progress=self.report, remove_from_bench=self.remove_from_bench
+            )
         site.clear_cache()
 
 

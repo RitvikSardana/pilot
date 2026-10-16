@@ -58,6 +58,16 @@ def test_proxy_protocol_survives_an_unrelated_write(tmp_path: Path) -> None:
     assert CommonConfig.read(bench_root.parent).proxy.protocol_v2 is True
 
 
+def test_cloudflare_proxy_survives_an_unrelated_write(tmp_path: Path) -> None:
+    common = CommonConfig()
+    common.proxy.cloudflare = True
+    bench_root = _bench_with_common(tmp_path, common)
+
+    _touch_unrelated_setting(bench_root)
+
+    assert CommonConfig.read(bench_root.parent).proxy.cloudflare is True
+
+
 def test_a_bench_reads_back_the_proxy_setting(tmp_path: Path) -> None:
     common = CommonConfig()
     common.proxy.protocol_v2 = True

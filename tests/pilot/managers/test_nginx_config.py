@@ -4,7 +4,7 @@ from unittest.mock import PropertyMock, patch
 
 import pytest
 
-from pilot.config import BenchConfig, SiteConfig
+from pilot.config import BenchConfig, RoutePolicy, SiteConfig
 from pilot.config.central import HostnameAlias
 from pilot.core.bench import Bench
 from pilot.exceptions import CommandError
@@ -201,6 +201,26 @@ def test_direct_exposure_keeps_default_xff(tmp_path: Path) -> None:
     assert "set $bench_from_proxy" not in config
     assert "if ($bench_from_proxy = 0)" not in config
     assert "X-Forwarded-For    $proxy_add_x_forwarded_for" in config
+
+
+def test_cloudflare_proxy_takes_the_client_ip_from_cf_connecting_ip(tmp_path: Path) -> None:
+    renderer = _renderer(tmp_path)
+    renderer.bench.config.proxy.cloudflare = True
+    config = renderer.generate_bench_config([(_BASE_SITE, _BASE_SITE.all_domains)], admin_ssl=False)
+
+    assert config.count("set_real_ip_from   173.245.48.0/20;") == 2
+    assert "set_real_ip_from   2400:cb00::/32;" in config
+    assert config.count("real_ip_header     CF-Connecting-IP;") == 2
+    assert "if ($bench_from_proxy = 0)" not in config
+
+
+def test_edge_proxy_routes_keep_their_own_real_ip_with_cloudflare_on(tmp_path: Path) -> None:
+    renderer = _renderer(tmp_path, proxy_servers=["203.0.113.5"])
+    renderer.bench.config.proxy.cloudflare = True
+    config = renderer.generate_bench_config([(_BASE_SITE, [])], admin_ssl=False)
+
+    assert "real_ip_header     X-Forwarded-For;" in config
+    assert "CF-Connecting-IP" not in config
 
 
 def test_trusted_proxies_gate_peer_and_trust_xff(tmp_path: Path) -> None:
@@ -605,6 +625,25 @@ def test_install_config_rolls_back_symlink_when_reload_fails(tmp_path: Path) -> 
 
     mock_run.assert_called_once()
     assert mock_run.call_args[0][0][-2:] == ["unlink", str(symlink_path)]
+
+
+def test_a_rejected_change_keeps_a_published_bench_serving_its_previous_config(tmp_path: Path) -> None:
+    """reload() puts the previous files back, so unpublishing would drop working sites."""
+    bench = _make_bench(tmp_path, _BASE_DATA)
+    manager = NginxManager(bench)
+    manager.include_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.include_path.write_text("previous, tested config")
+    symlink_path = tmp_path / "test-bench.conf"
+    symlink_path.symlink_to(manager.include_path)
+
+    with (
+        patch.object(manager, "reload", side_effect=CommandError("nginx -t failed", returncode=1)),
+        patch.object(manager, "_unpublish") as unpublish,
+        pytest.raises(CommandError),
+    ):
+        manager._reload_or_rollback(symlink_path)
+
+    unpublish.assert_not_called()
 
 
 def test_stage_and_copy_creates_missing_nginx_config_dir(tmp_path: Path) -> None:
@@ -1178,3 +1217,118 @@ def test_only_the_bad_gateway_page_retries_on_its_own() -> None:
     pages = {code: render_error_html(code, *text) for code, text in ERROR_PAGES.items()}
     assert '<meta http-equiv="refresh" content="5">' in pages[502]
     assert all("http-equiv" not in page for code, page in pages.items() if code != 502)
+
+
+def test_a_config_nginx_rejects_is_put_back(tmp_path: Path) -> None:
+    from pilot.exceptions import CommandError
+
+    bench = _bench_with_site(tmp_path, _BASE_DATA)
+    include_conf = tmp_path / "config" / "nginx" / "include.conf"
+    include_conf.parent.mkdir(parents=True, exist_ok=True)
+    include_conf.write_text("# the config nginx runs now\n")
+    manager = NginxManager(bench)
+
+    manager.generate_config(ssl_ready=False)
+    with (
+        patch("pilot.managers.nginx.run_command", side_effect=CommandError("nginx: [emerg] bad")),
+        pytest.raises(CommandError),
+    ):
+        manager.reload()
+
+    assert include_conf.read_text() == "# the config nginx runs now\n"
+
+
+def test_a_rejected_config_never_undoes_a_file_another_operation_wrote_since(tmp_path: Path) -> None:
+    from pilot.exceptions import CommandError
+
+    bench = _bench_with_site(tmp_path, _BASE_DATA)
+    include_conf = tmp_path / "config" / "nginx" / "include.conf"
+    include_conf.parent.mkdir(parents=True, exist_ok=True)
+    include_conf.write_text("# old\n")
+    manager = NginxManager(bench)
+
+    manager.generate_config(ssl_ready=False)
+    include_conf.write_text("# accepted by another operation\n")
+    with (
+        patch("pilot.managers.nginx.run_command", side_effect=CommandError("nginx: [emerg] bad")),
+        pytest.raises(CommandError),
+    ):
+        manager.reload()
+
+    assert include_conf.read_text() == "# accepted by another operation\n"
+
+
+def test_a_site_alias_redirects_to_the_primary_domain_but_answers_central_probes(tmp_path: Path) -> None:
+    edge = RoutePolicy("https", "http", "x_forwarded_for")
+    renamed = SiteConfig(
+        name="shop.example.com",
+        apps=["frappe"],
+        domains=["www.shop.example.com"],
+        primary_domain="www.shop.example.com",
+        route=edge,
+    )
+    config = _cloud_config(tmp_path, [(renamed, False)], hostname_mappings={_SITE_GLOB: renamed.name})
+
+    assert "return 301 https://www.shop.example.com$request_uri;" in config
+    assert "location = /api/method/ping {" in config
+
+
+_REAL_CONFIG_LOCK = NginxManager.config_lock
+
+
+def _is_locked(lock_file: Path) -> bool:
+    import fcntl
+
+    with open(lock_file) as other:
+        try:
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(other, fcntl.LOCK_UN)
+    return False
+
+
+def test_a_config_change_holds_the_host_lock_until_nginx_accepts_it(tmp_path: Path, monkeypatch) -> None:
+    """Every bench shares one nginx, so no bench may test or reload while another writes."""
+    monkeypatch.setattr(NginxManager, "config_lock", _REAL_CONFIG_LOCK)
+    monkeypatch.setattr("pilot.utils.benches_dir", lambda: tmp_path / "benches")
+    manager = NginxManager(_bench_with_site(tmp_path, _BASE_DATA))
+    lock_file = tmp_path / "benches" / ".nginx.lock"
+    locked_at_reload: list[bool] = []
+    locked_at_provider: list[bool] = []
+
+    def proxy_servers() -> list[str]:
+        locked_at_provider.append(lock_file.exists() and _is_locked(lock_file))
+        return []
+
+    with (
+        patch("pilot.core.adapters.domain_provider.DomainRouteProvider.proxy_servers", side_effect=proxy_servers),
+        patch.object(manager, "reload", side_effect=lambda: locked_at_reload.append(_is_locked(lock_file))),
+    ):
+        manager.apply_config(ssl_ready=False)
+
+    # The provider is a subprocess, so it is asked before every bench waits on the lock.
+    assert locked_at_provider == [False]
+    assert locked_at_reload == [True]
+    assert not _is_locked(lock_file)
+
+
+def test_removing_a_bench_from_nginx_does_not_ask_the_domain_provider(tmp_path: Path, monkeypatch) -> None:
+    """A failing provider must not keep a dropped bench's routes in nginx."""
+    from pilot.exceptions import DomainProviderError
+
+    monkeypatch.setattr(NginxManager, "config_lock", _REAL_CONFIG_LOCK)
+    monkeypatch.setattr("pilot.utils.benches_dir", lambda: tmp_path / "benches")
+    manager = NginxManager(_bench_with_site(tmp_path, _BASE_DATA))
+
+    with (
+        patch(
+            "pilot.core.adapters.domain_provider.DomainRouteProvider.proxy_servers",
+            side_effect=DomainProviderError("provider is down"),
+        ),
+        patch.object(manager, "_unpublish") as unpublish,
+        patch.object(manager, "reload"),
+    ):
+        manager.uninstall_config()
+
+    unpublish.assert_called_once()

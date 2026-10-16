@@ -156,6 +156,7 @@ def test_logs_setup_installs_fluent_bit_when_missing(tmp_path: Path) -> None:
     with (
         patch("pilot.managers.fluentbit.is_linux", return_value=True),
         patch("pilot.managers.fluentbit.shutil.which", return_value=None),
+        patch("pilot.managers.fluentbit.Path.exists", return_value=False),
         patch("pilot.managers.fluentbit.get_package_manager", return_value=manager),
         patch("pilot.managers.fluentbit.run_command"),
     ):
@@ -174,6 +175,21 @@ def test_logs_setup_skips_install_when_fluent_bit_present(tmp_path: Path) -> Non
         patch("pilot.managers.fluentbit.shutil.which", return_value="/usr/bin/fluent-bit"),
         patch("pilot.managers.fluentbit.get_package_manager", return_value=manager),
         patch("pilot.managers.fluentbit.run_command"),
+    ):
+        configurator.setup()
+
+    manager.install.assert_not_called()
+
+
+def test_logs_setup_skips_install_when_fluent_bit_is_only_in_opt(tmp_path: Path) -> None:
+    configurator = _configurator(tmp_path)
+    manager = MagicMock()
+
+    with (
+        patch("pilot.managers.fluentbit.is_linux", return_value=True),
+        patch("pilot.managers.fluentbit.shutil.which", return_value=None),
+        patch("pilot.managers.fluentbit.Path.exists", return_value=True),
+        patch("pilot.managers.fluentbit.get_package_manager", return_value=manager),
     ):
         configurator.setup()
 
@@ -223,3 +239,61 @@ def test_log_config_roundtrips() -> None:
     assert roundtripped.telemetry.endpoint == "https://datum.internal"
     assert roundtripped.telemetry.token == "abc"
     assert roundtripped.telemetry.logs_enabled is True
+
+
+def _sync(tmp_path: Path, config: TelemetryConfig, *, binary: str | None, active: bool) -> MagicMock:
+    """Run sync with install reduced to writing the files, and return the install mock."""
+    configurator = _configurator(tmp_path)
+    with (
+        patch("pilot.managers.fluentbit.cli_root", return_value=tmp_path),
+        patch.object(LogsConfigurator, "binary_path", binary),
+        patch("pilot.managers.fluentbit.subprocess.run", return_value=MagicMock(returncode=0 if active else 3)),
+        patch.object(LogsConfigurator, "install", autospec=True, side_effect=LogsConfigurator._write_configs) as install,
+    ):
+        configurator.sync(config)
+    return install
+
+
+def test_logs_sync_waits_for_a_credential(tmp_path: Path) -> None:
+    install = _sync(tmp_path, TelemetryConfig(), binary="/usr/bin/fluent-bit", active=False)
+
+    install.assert_not_called()
+
+
+def test_logs_sync_waits_for_the_binary(tmp_path: Path) -> None:
+    config = TelemetryConfig(endpoint="https://datum.internal", token="jwt")
+
+    install = _sync(tmp_path, config, binary=None, active=False)
+
+    install.assert_not_called()
+
+
+def test_logs_sync_starts_the_shipper_once_a_credential_arrives(tmp_path: Path) -> None:
+    config = TelemetryConfig(endpoint="https://datum.internal", token="jwt")
+
+    install = _sync(tmp_path, config, binary="/usr/bin/fluent-bit", active=False)
+
+    install.assert_called_once()
+
+
+def test_logs_sync_leaves_a_current_running_shipper_alone(tmp_path: Path) -> None:
+    config = TelemetryConfig(endpoint="https://datum.internal", token="jwt")
+    _sync(tmp_path, config, binary="/usr/bin/fluent-bit", active=False)
+
+    install = _sync(tmp_path, config, binary="/usr/bin/fluent-bit", active=True)
+
+    install.assert_not_called()
+
+
+def test_logs_sync_restarts_the_shipper_for_a_new_token(tmp_path: Path) -> None:
+    _sync(
+        tmp_path,
+        TelemetryConfig(endpoint="https://datum.internal", token="old"),
+        binary="/usr/bin/fluent-bit",
+        active=False,
+    )
+
+    config = TelemetryConfig(endpoint="https://datum.internal", token="new")
+    install = _sync(tmp_path, config, binary="/usr/bin/fluent-bit", active=True)
+
+    install.assert_called_once()

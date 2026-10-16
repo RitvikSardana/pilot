@@ -103,5 +103,12 @@ export const databaseApi = {
           headers: { 'Idempotency-Key': idempotencyKey },
         })
         .json(),
+    setMemoryShare: (memoryShare: number, idempotencyKey: string): Promise<TaskPayload> =>
+      request
+        .post('database/quick-actions/memory-share', {
+          json: { memory_share: memoryShare },
+          headers: { 'Idempotency-Key': idempotencyKey },
+        })
+        .json(),
   },
 }

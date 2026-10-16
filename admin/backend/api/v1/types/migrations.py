@@ -28,6 +28,7 @@ class MigrationApp(TypedDict):
     updated_sha: str | None
     target_sha: str | None
     target_kind: Literal["tag", "commit"]
+    has_migrate_changes: bool
     compare_url: str | None
 
 

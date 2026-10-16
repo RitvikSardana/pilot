@@ -42,8 +42,9 @@ class UptimeMonitor:
                 return self._result(site_name, start, up=response.status == 200, status_code=response.status)
         except urllib.error.HTTPError as error:
             return self._result(site_name, start, up=False, status_code=error.code)
-        except (urllib.error.URLError, TimeoutError, OSError):
-            return self._result(site_name, start, up=False, status_code=None)
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            reason = getattr(error, "reason", error)
+            return self._result(site_name, start, up=False, status_code=None, error=str(reason) or type(reason).__name__)
 
     @property
     def alerts_path(self):
@@ -94,6 +95,7 @@ class UptimeMonitor:
                 "site": site,
                 "status_code": last_seen[site]["status_code"],
                 "response_ms": last_seen[site]["response_ms"],
+                "error": last_seen[site].get("error"),
             }
             for site in down
         ]
@@ -109,14 +111,20 @@ class UptimeMonitor:
         }
 
     @staticmethod
-    def _result(site_name: str, start: float, up: bool, status_code: int | None) -> dict:
-        return {
+    def _result(
+        site_name: str, start: float, up: bool, status_code: int | None, error: str | None = None
+    ) -> dict:
+        result = {
             "time": datetime.now(UTC).isoformat(),
             "site": site_name,
             "up": up,
             "status_code": status_code,
             "response_ms": int((time.monotonic() - start) * 1000),
         }
+        # A failure with no HTTP status (TLS, DNS, timeout) keeps its reason.
+        if error:
+            result["error"] = error
+        return result
 
 
 def _production_uptime_monitors() -> list[UptimeMonitor]:

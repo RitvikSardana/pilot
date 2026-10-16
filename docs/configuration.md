@@ -61,6 +61,16 @@ branch = "version-15"
 branches = ["version-15", "develop"]
 ```
 
+An app that the marketplace registry lists updates to the registry's newest release for its branch. It updates to the branch tip instead when the registry has no release for that branch, or when the entry sets `follow_branch = true`, for example a developer who pushes to the app's own repository:
+
+```toml
+[[apps]]
+name = "myapp"
+repo = "https://github.com/frappe/myapp"
+branch = "develop"
+follow_branch = true
+```
+
 `[redis]` defines separate cache and queue ports. `[[workers]]` defines queue groups and their process counts.
 
 ## Runtime modes
@@ -164,6 +174,7 @@ admin_user = "root"
 root_password = ""
 socket_path = ""
 existing = false
+memory_share = 0.5
 
 [postgres]
 host = "localhost"
@@ -192,6 +203,10 @@ pattern = "vm-*.par-1.frappe.cloud"
 target = "admin.local"
 redirect = true
 
+[proxy]
+protocol_v2 = false
+cloudflare = false
+
 [telemetry]
 endpoint = "https://telemetry-svc.par-1.frappe.cloud"
 token = ""
@@ -216,13 +231,21 @@ url = "https://cloud.frappe.io"
 
 Shared tables are MariaDB, Postgres, Let's Encrypt, Central, the edge proxy, telemetry, resource limits, Frappe Cloud, and the admin JWKS issuer. A bench exposes these values through its own `BenchConfig`; the model merges shared values on read and writes them back to the common file.
 
-Central endpoint and authentication data come from instance metadata. While Central is enabled and bootstrap is pending, remote-token verification uses only the current staged JWKS URL, audience, and initial key set from instance metadata. Pilot caches that staged issuer in each Admin process until shared config changes or bootstrap completes. After bootstrap, it clears the staged entry and uses only the issuer saved in shared config. The metadata can include `initial_jwks_cache`, the issuer's JWK set. Pilot uses it to initialize an empty JWKS cache before it marks the host bootstrapped, so the first remote token does not wait for an issuer fetch. It does not replace keys already fetched from the issuer. The Central configuration is in the `pilot-central` attribute. Three optional attributes hold [JSON Merge Patches](https://www.rfc-editor.org/rfc/rfc7396) for config files: `pilot-common-config` for `common_config.toml`, `pilot-config` for `bench.toml`, and `pilot-common-site-config` for `sites/common_site_config.json`. For example, `pilot-config` can hold `{"s3": {"bucket": "team-backups"}}`. A patch changes only the keys it names, and `null` resets a key to its default. `pilot-common-config` must not change `central`, because bootstrap owns that table. Pilot rejects unknown TOML keys and validates the result before it writes a file. Pilot applies the patches once, during bootstrap, before it marks the host bootstrapped, and does not read them again. Central must write them before `pilot-central`. Each file has its own attribute because the cloud caps a metadata value at 1 KiB. `central.hostname_aliases` maps a VM hostname pattern to its current local target. The VM ID is assigned at runtime, so use `*` for that part. Pilot creates redirect rules only for aliases whose targets exist on the bench. Renaming a site or moving the admin domain re-points the matching alias automatically; remove one when the rule is no longer needed. `pilot setup central` writes these settings - see [Setup Commands](commands.md#setup-commands).
+Central endpoint and authentication data come from instance metadata. While Central is enabled and bootstrap is pending, remote-token verification uses only the current staged JWKS URL, audience, and initial key set from instance metadata. Pilot caches that staged issuer in each Admin process until shared config changes or bootstrap completes. After bootstrap, it clears the staged entry and uses only the issuer saved in shared config. The metadata can include `initial_jwks_cache`, the issuer's JWK set. Pilot uses it to initialize an empty JWKS cache before it marks the host bootstrapped, so the first remote token does not wait for an issuer fetch. It does not replace keys already fetched from the issuer. The Central configuration is in the `pilot-central` attribute. Three optional attributes hold [JSON Merge Patches](https://www.rfc-editor.org/rfc/rfc7396) for config files: `pilot-common-config` for `common_config.toml`, `pilot-config` for `bench.toml`, and `pilot-common-site-config` for `sites/common_site_config.json`. For example, `pilot-config` can hold `{"s3": {"bucket": "team-backups"}}`. A patch changes only the keys it names, and `null` resets a key to its default. `pilot-common-config` must not change `central`, because bootstrap owns that table. Pilot rejects unknown TOML keys and validates the result before it writes a file. Pilot applies the patches once, during bootstrap, before it marks the host bootstrapped, and does not read them again. Central must write them before `pilot-central`. Each file has its own attribute because the cloud caps a metadata value at 1 KiB. `central.hostname_aliases` maps a VM hostname pattern to its current local target. The VM ID is assigned at runtime, so use `*` for that part. Pilot creates redirect rules only for aliases whose targets exist on the bench. A redirecting site alias sends clients to the site's primary domain, on the scheme clients reach it with, but still answers `/api/method/ping`, because Central probes the alias for readiness without following redirects. Renaming a site or moving the admin domain re-points the matching alias automatically; remove one when the rule is no longer needed. `pilot setup central` writes these settings - see [Setup Commands](commands.md#setup-commands).
 
-Before it applies the Central credential, bootstrap sizes Pilot's MariaDB for the VM's memory, because an image built on another host keeps that host's sizing. It writes `my.cnf` and the unit for the next start, then applies the values to the running server without a restart: the buffer pool and its automatic minimum, `innodb_log_file_size`, `key_buffer_size`, and `max_connections`. An option set in `managed.cnf` keeps its value. The buffer pool cannot grow above the running `innodb_buffer_pool_size_max`, so a larger pool waits for the next start. Higher unit memory limits apply before MariaDB grows. Lower limits apply only after MariaDB uses less than the new `MemoryHigh`; if its usage stays higher or cannot be read for a minute, they wait for the next start.
+Before it applies the Central credential, bootstrap sizes Pilot's MariaDB for the VM's memory, because an image built on another host keeps that host's sizing. It writes `my.cnf` and the unit for the next start, then applies the values to the running server without a restart: the buffer pool and its automatic minimum, `innodb_log_file_size`, `key_buffer_size`, and `max_connections`. An option set in `managed.cnf` keeps its value. The buffer pool cannot grow above the running `innodb_buffer_pool_size_max`, so a larger pool waits for the next start. Higher unit memory limits apply before MariaDB grows. Lower limits apply only after MariaDB uses less than the new `MemoryHigh`. The unit file is written last, after the limits apply; if the usage stays higher or cannot be read for a minute, the old unit stays and a later attempt tries again.
+
+The same sizing runs again when the host's memory changes, for example after a VM resize. `my.cnf` records the memory it was sized for. The user unit `pilot-mariadb-sizing.service` runs before every start of `pilot-mariadb.service`; when the host memory differs from the recorded value by 100 MB or more, it writes `my.cnf` and the unit for the new memory and sets the new memory limits for this start. MariaDB then starts with the new buffer pool, with no restart. A buffer pool size saved in `managed.cnf` that is larger than the new host allows is removed, so the automatic sizing takes over.
+
+On a host with less than 800 MB of memory, MariaDB gets a 64 MB buffer pool, an 8 MB key buffer, and 20 connections, which is enough for one bench with one site. `MemoryHigh` then stays at least a quarter of `MemoryMax` below it.
+
+`mariadb.memory_share` is the share of host memory that Pilot's MariaDB may use, from 0.2 to 0.8 (default 0.5); the benches keep the rest. Settings, Database, Memory split changes it for every bench of the host and re-sizes the running server. A larger buffer pool than the running server allows takes effect at the next MariaDB start.
 
 The domain provider controls the edge route for each hostname. Its route policy gives Pilot the public scheme, origin scheme, and client IP source.
 
 Pilot configures PROXY protocol v2 when an HTTPS origin needs it. See [Per-domain TLS](#per-domain-tls).
+
+Set `proxy.cloudflare = true` when site domains use Cloudflare's proxy. nginx then takes the client IP from the `CF-Connecting-IP` header, but only from [Cloudflare's addresses](https://www.cloudflare.com/ips/). A domain that resolves to Cloudflare's addresses passes the add-domain DNS check with a warning, because Pilot cannot see the server behind the proxy. This check does not need the setting. In Cloudflare, use the Full (strict) SSL mode. In Flexible mode, Cloudflare sends requests to Pilot over HTTP, Pilot redirects them to HTTPS, and the browser loops. Let's Encrypt checks the domain over HTTP, so turn off Always Use HTTPS in Cloudflare until Pilot issues the certificate.
 
 ### Frappe Cloud
 
@@ -232,9 +255,11 @@ Pilot configures PROXY protocol v2 when an HTTPS origin needs it. See [Per-domai
 
 `[telemetry]` is one credential for both shippers. `endpoint` is the base URL of the region's Datum, with no path: metrics append `/v1/ingest` and logs append `/v1/logs/ingest`. `token` is the JWT Central mints for the region, which Datum tells apart by route rather than by token, so one serves both. `logs_enabled` and `metrics_enabled` switch each shipper independently.
 
-Either shipper runs only when its switch is on and both `endpoint` and `token` are set. Metrics also need the optional `datum` package (`pip install pilot[metrics]`). Logs are written locally regardless of shipping settings.
+Either shipper runs only when its switch is on and both `endpoint` and `token` are set. Logs are written locally regardless of shipping settings.
 
 `pilot setup telemetry` writes this section and installs the log shipper. Central is asked for the credential when `[central] enabled` is set, and what it returns replaces what is already there, because the token expires. `--endpoint` and `--token` override the fetch. `pilot setup production` does the same, once, before configuring either shipper.
+
+The monitor checks this section on every run, so both shippers start when a credential arrives later, such as from Central's bootstrap. It rewrites the Fluent Bit config and restarts Fluent Bit when the endpoint or token changes, and it starts Fluent Bit again when it is not running. Fluent Bit must be installed. `install.sh` installs it on Debian and Ubuntu. `pilot remove logs` stops Fluent Bit and sets `logs_enabled = false`, so the monitor does not start it again.
 
 ### Alert Delivery
 

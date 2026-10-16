@@ -15,6 +15,7 @@ class RemoveLogsCommand(Command):
     group: ClassVar[str] = "remove"
 
     def run(self) -> None:
+        from pilot.config import BenchConfig
         from pilot.managers.fluentbit import LogsConfigurator
         from pilot.managers.systemd_user import user_service_installed
 
@@ -23,4 +24,7 @@ class RemoveLogsCommand(Command):
             self.report("Fluent Bit is not installed.")
             return
         configurator.remove()
-        self.report("Fluent Bit removed.")
+        # The monitor installs it again while logs are on.
+        with BenchConfig.open(self.bench.path) as config:
+            config.telemetry.logs_enabled = False
+        self.report("Fluent Bit removed. Set [telemetry] logs_enabled to ship logs again.")

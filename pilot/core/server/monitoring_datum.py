@@ -9,7 +9,7 @@ try:
 
     HAS_DATUM_CLIENT = True
 except ImportError:
-    # Shipping is opt-in (pip install pilot[metrics]); the logs are written regardless.
+    # Only the admin venv has it; the stdlib-only CLI does not. The logs are written regardless.
     HAS_DATUM_CLIENT = False
 
 # Raw MariaDB counter -> the label that separates it from its siblings.
@@ -104,7 +104,8 @@ class MetricShipper:
 
     def send(self) -> int:
         """One tick, one POST. Returns the HTTP status, or 0 when nothing landed."""
-        if not self.client or not self.batches:
+        # Datum has a __len__ for its buffer, so an idle client is falsy.
+        if self.client is None or not self.batches:
             return 0
         status = self.client.send(*self.batches)
         self.batches = []

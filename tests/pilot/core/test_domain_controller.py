@@ -210,6 +210,32 @@ def test_builtin_dns_records_without_provider(tmp_path: Path, monkeypatch) -> No
     }
 
 
+def test_a_domain_behind_cloudflare_is_accepted_with_a_warning(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(DomainRouteProvider, "_server_ip", staticmethod(lambda: "198.51.100.7"))
+    addresses = {"app.example.com": {"104.16.1.2", "2606:4700::1"}}
+    monkeypatch.setattr(DomainRouteProvider, "_resolve", staticmethod(lambda host: set(addresses.get(host, ()))))
+    bench = _make_bench(tmp_path)
+    _write_site(bench, "mysite")
+
+    DomainRouteProvider(bench).register("mysite", "app.example.com")
+
+    assert "app.example.com" in DomainRouteProvider(bench).domains("mysite")
+    assert "Cloudflare" in capsys.readouterr().err
+
+
+def test_a_domain_pointing_elsewhere_is_refused(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(DomainRouteProvider, "_server_ip", staticmethod(lambda: "198.51.100.7"))
+    addresses = {"app.example.com": {"104.16.1.2", "203.0.113.9"}}
+    monkeypatch.setattr(DomainRouteProvider, "_resolve", staticmethod(lambda host: set(addresses.get(host, ()))))
+    bench = _make_bench(tmp_path)
+    _write_site(bench, "mysite")
+
+    with pytest.raises(DomainConflictError, match="doesn't point here"):
+        DomainRouteProvider(bench).register("mysite", "app.example.com")
+
+
 def test_nginx_gates_tcp_peer_to_provider_proxy_servers(tmp_path: Path, monkeypatch) -> None:
     _install_provider(tmp_path, monkeypatch)
     config = NginxConfigRenderer(_make_bench(tmp_path)).generate_bench_config(
@@ -222,3 +248,40 @@ def test_nginx_gates_tcp_peer_to_provider_proxy_servers(tmp_path: Path, monkeypa
     assert "if ($bench_from_proxy = 0) { return 403; }" in config
     assert "deny               all;" not in config
     assert "X-Forwarded-For    $http_x_forwarded_for" in config
+
+
+def test_set_primary_waits_for_the_site_config_lock(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    from pilot.internal.atomic_file import exclusive_file_lock
+
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    bench = _make_bench(tmp_path)
+    _write_site(bench, "site1.local", {"domains": ["shop.example.com"]})
+    path = bench.sites_path / "site1.local" / "site_config.json"
+    provider = DomainRouteProvider(bench)
+
+    with exclusive_file_lock(path):
+        writer = threading.Thread(target=provider.set_primary, args=("site1.local", "shop.example.com"))
+        writer.start()
+        writer.join(timeout=0.3)
+        assert writer.is_alive()
+        assert "host_name" not in json.loads(path.read_text())
+    writer.join(timeout=5)
+
+    assert json.loads(path.read_text())["host_name"] == "http://shop.example.com"
+
+
+def test_a_provider_that_does_not_answer_fails_within_its_timeout(monkeypatch) -> None:
+    import subprocess
+
+    from pilot.core.adapters import domain_provider
+
+    def hang(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(domain_provider, "which", lambda name: "/usr/local/bin/bench-domain-provider")
+    monkeypatch.setattr(domain_provider.subprocess, "run", hang)
+
+    with pytest.raises(DomainProviderError, match="did not answer within 30 seconds"):
+        DomainRouteProvider.proxy_servers()

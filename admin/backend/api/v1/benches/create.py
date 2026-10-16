@@ -131,9 +131,7 @@ def _start_production_setup_wizard(new_dir: Path, name: str, admin_domain: str):
             DomainRouteProvider(bench).register(admin_domain, admin_domain)
             pm = _process_manager(bench)
             pm.start_admin()
-            nginx = NginxManager(bench)
-            nginx.generate_config()
-            nginx.install_config()
+            NginxManager(bench).publish_config()
             server_ip = DomainRouteProvider._server_ip()
     except Exception:
         return error_response(

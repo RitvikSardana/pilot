@@ -26,6 +26,18 @@ class BenchRuntime:
     def __init__(self, bench: "Bench") -> None:
         self.bench = bench
 
+    @property
+    def is_database_ready(self) -> bool:
+        """Whether the database that Pilot runs for this production bench is reachable.
+        True for an existing server, SQLite or a development bench."""
+        from pilot.managers.database import MariaDBManager, PostgresManager
+
+        config = self.bench.config
+        if not config.production.enabled or config.db_type == "sqlite":
+            return True
+        manager = PostgresManager(config.postgres) if config.db_type == "postgres" else MariaDBManager(config.mariadb)
+        return manager.config.existing or manager.is_reachable()
+
     def start(self, on_progress: Callable[[str], None]) -> None:
         initialized = self.bench.is_initialized
         process_manager = self.bench.config.production.process_manager
@@ -54,16 +66,15 @@ class BenchRuntime:
         on_progress(f"Stopped bench {self.bench.config.name}.")
 
     def restart_workload(self, include_admin: bool, on_progress: Callable[[str], None]) -> None:
+        """Restart production processes. Fails when there is nothing to restart."""
         if not self.bench.config.production.enabled:
-            on_progress(_DEV_RESTART_MESSAGE)
-            return
+            raise BenchError(_DEV_RESTART_MESSAGE)
 
         from pilot.managers.processes.local import ProcessManager
 
         manager = cast("ManagedProcessManager", ProcessManager.for_bench(self.bench))
         if not manager.is_configured():
-            on_progress(incomplete_production_message(self.bench))
-            return
+            raise BenchError(incomplete_production_message(self.bench))
 
         manager.write_config()
         manager.reload_manager_config()
@@ -89,7 +100,7 @@ class BenchRuntime:
         ProcessManager.for_bench(self.bench).write_config()
         self.bench.write_common_site_config()
         if self.bench.config.production.enabled:
-            NginxManager(self.bench).generate_config()
+            NginxManager(self.bench).write_config()
 
     def rebuild_assets(self, apps: list[str] | None = None, force: bool = False) -> None:
         from pilot.managers.environment import PythonEnvManager
@@ -243,20 +254,13 @@ class BenchRuntime:
             return 7000
 
     def _install_python_requirements(self, on_progress: Callable[[str], None]) -> None:
-        from pilot.managers.environment import ensure_uv
-        from pilot.utils import run_command
-
-        uv = ensure_uv()
-        python = str(self.bench.python)
+        from pilot.managers.environment import PythonEnvManager
 
         for app in self.bench.apps():
             if not (app.path / "pyproject.toml").exists() and not (app.path / "setup.py").exists():
                 continue
             on_progress(f"Installing Python requirements for {app.config.name}...")
-            run_command(
-                [uv, "pip", "install", "--python", python, "-e", app.editable_target],
-                stream_output=True,
-            )
+            PythonEnvManager(self.bench).install_app(app)
 
     def _install_js_requirements(self, on_progress: Callable[[str], None]) -> None:
         from pilot.core.app.node_packages import NodePackages

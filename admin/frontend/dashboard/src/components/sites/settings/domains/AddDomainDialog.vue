@@ -17,6 +17,7 @@ const DNS_RECORD_COLUMNS = [
 
 interface Props {
   siteName: string
+  emailRequired?: boolean
 }
 
 interface DnsRecordGroup {
@@ -31,6 +32,7 @@ const show = defineModel({ default: false })
 
 const step = ref('input')
 const domain = ref('')
+const email = ref('')
 const error = ref('')
 const continuing = ref(false)
 const adding = ref(false)
@@ -41,6 +43,7 @@ watch(show, (open) => {
   if (!open) return
   step.value = 'input'
   domain.value = ''
+  email.value = ''
   error.value = ''
   dnsRecordGroups.value = []
 })
@@ -76,7 +79,7 @@ const confirmAdd = async () => {
   error.value = ''
   adding.value = true
   try {
-    const data = await sitesApi.domains.add(props.siteName, domain.value.trim())
+    const data = await sitesApi.domains.add(props.siteName, domain.value.trim(), email.value.trim())
     if (!data.task_id) {
       error.value = apiErrorMessage(data, 'Failed to add domain.')
       return
@@ -110,13 +113,29 @@ const confirmAdd = async () => {
         </template>
       </TextInput>
 
+      <TextInput
+        v-if="emailRequired"
+        v-model="email"
+        type="email"
+        placeholder="you@example.com"
+        class="mt-4 w-full"
+        @keydown.enter="continueAdd"
+      >
+        <template #label>
+          <span class="text-sm">Let's Encrypt email</span>
+        </template>
+      </TextInput>
+      <p v-if="emailRequired" class="mt-1.5 text-ink-gray-5 text-p-xs">
+        Required to issue and renew the domain's certificate.
+      </p>
+
       <ErrorMessage v-if="error" :message="error" class="mt-2" />
       <div class="flex justify-end gap-2 mt-4">
         <Button @click="show = false">Cancel</Button>
         <Button
           variant="solid"
           :loading="continuing"
-          :disabled="!domain.trim()"
+          :disabled="!domain.trim() || (emailRequired && !email.trim())"
           @click="continueAdd"
         >
           Continue

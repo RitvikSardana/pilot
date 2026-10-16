@@ -116,3 +116,41 @@ def test_settings_success_has_no_legacy_error_fields(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.get_json() == {"restarted": True}
+
+
+def test_a_port_change_on_production_rewrites_nginx_after_the_restart(tmp_path: Path) -> None:
+    def enable_production(config: BenchConfig) -> None:
+        config.production.enabled = True
+        config.production.process_manager = "systemd"
+
+    client = _client(tmp_path / "bench", enable_production)
+    calls: list[str] = []
+    with (
+        patch("pilot.core.bench.settings.regenerate_configs", side_effect=lambda bench: calls.append("units")),
+        patch(
+            "pilot.core.bench.settings.restart_running_workload",
+            side_effect=lambda bench: calls.append("restart") or True,
+        ),
+        patch("pilot.core.bench.settings.regenerate_nginx", side_effect=lambda bench: calls.append("nginx")),
+    ):
+        response = client.patch("/api/v1/settings", json={"bench": {"http_port": 8123}})
+
+    assert response.status_code == 200
+    assert calls == ["units", "restart", "nginx"]
+
+
+def test_a_failed_restart_on_production_still_rewrites_nginx(tmp_path: Path) -> None:
+    def enable_production(config: BenchConfig) -> None:
+        config.production.enabled = True
+        config.production.process_manager = "systemd"
+
+    client = _client(tmp_path / "bench", enable_production)
+    with (
+        patch("pilot.core.bench.settings.regenerate_configs"),
+        patch("pilot.core.bench.settings.restart_running_workload", side_effect=TimeoutError()),
+        patch("pilot.core.bench.settings.regenerate_nginx") as regenerate_nginx,
+    ):
+        response = client.patch("/api/v1/settings", json={"bench": {"http_port": 8123}})
+
+    assert response.get_json()["error"]["code"] == "service_restart_failed"
+    regenerate_nginx.assert_called_once()

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import re
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -162,11 +164,53 @@ class App:
         if repo.has_unpushed_commits:
             return True
         outputs = build_output_paths(self)
+        build_lockfiles = self.failed_build_lockfiles
         return any(
             Path(path).name != "components.d.ts"
             and not any(path == output or path.startswith(f"{output}/") for output in outputs)
+            and (path not in build_lockfiles or build_lockfiles[path] != self._content_hash(path))
             for path in repo.changed_paths
         )
+
+    @property
+    def failed_build_lockfiles(self) -> dict[str, str]:
+        """Content hashes of the lockfiles that failed builds' own installs changed."""
+        try:
+            return json.loads(self._failed_build_lockfiles_path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    @property
+    def _failed_build_lockfiles_path(self) -> Path:
+        return self._repository.repo.git_dir / "pilot-failed-build-lockfiles.json"
+
+    def _content_hash(self, path: str) -> str:
+        file = self.path / path
+        return hashlib.sha256(file.read_bytes()).hexdigest() if file.is_file() else ""
+
+    @contextlib.contextmanager
+    def record_lockfiles_on_failure(self) -> Iterator[None]:
+        """Record the lockfiles a failed build's installs changed, so they do not rule out
+        prebuilt assets. A later edit changes the hash and counts as a change."""
+        from pilot.core.app.node_packages import PACKAGE_MANAGERS
+        from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text_locked
+
+        repo = self._repository.repo
+        before = set(repo.changed_paths)
+        try:
+            yield
+        except BaseException:
+            lockfiles = {manager.lockfile for manager in PACKAGE_MANAGERS}
+            changed = {
+                path: self._content_hash(path)
+                for path in repo.changed_paths
+                if path not in before and Path(path).name in lockfiles and (self.path / path).is_file()
+            }
+            if changed:
+                with exclusive_file_lock(self._failed_build_lockfiles_path):
+                    recorded = self.failed_build_lockfiles | changed
+                    replace_private_text_locked(self._failed_build_lockfiles_path, json.dumps(recorded))
+            raise
 
     @property
     def has_page_islands(self) -> bool:
@@ -186,6 +230,9 @@ class App:
 
     def update_target(self) -> RevisionPin | None:
         return self._repository.update_target()
+
+    def has_migrate_changes(self, pin: RevisionPin) -> bool:
+        return self._repository.has_migrate_changes(pin)
 
     @property
     def marketplace_entry(self) -> dict | None:

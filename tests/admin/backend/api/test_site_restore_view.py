@@ -399,3 +399,17 @@ def test_a_site_token_cannot_use_another_sites_upload(tmp_path: Path) -> None:
 
     assert reply.status_code == 422
     assert reply.get_json()["error"]["message"] == "The upload does not exist."
+
+
+def test_a_backup_is_refused_while_a_restore_owns_the_site(tmp_path: Path) -> None:
+    bench_root = tmp_path / "benches" / "current"
+    client = _client(bench_root)
+    restore = client.post(
+        "/api/v1/sites/a.localhost/actions/restore",
+        json={"parts": ["database"], "source_site": "b.localhost", "backup_timestamp": "20261004_010000"},
+    )
+
+    backup = client.post("/api/v1/sites/a.localhost/backups")
+
+    assert restore.status_code == 202
+    assert backup.status_code == 409

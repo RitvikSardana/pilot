@@ -70,15 +70,35 @@ class SiteDomains:
         )
         return self._description(config, attached_domain, is_primary)
 
-    def apply_task(self, idempotency_key: str | None = None) -> str:
+    def apply_task(self, idempotency_key: str | None = None, email: str = "") -> str:
+        """Regenerate nginx for the domain change, and issue certificates when the site needs
+        them and has an email."""
         from pilot.tasks.setup_letsencrypt import SetupLetsEncryptTask
         from pilot.tasks.setup_nginx import SetupNginxTask
 
-        if self._is_ssl_enabled():
-            return SetupLetsEncryptTask.queue(self.site.bench, idempotency_key=idempotency_key)
+        if self.is_tls_enabled and (email or self.site.bench.config.letsencrypt.email):
+            return SetupLetsEncryptTask.queue(self.site.bench, email=email, idempotency_key=idempotency_key)
         return SetupNginxTask.queue(self.site.bench, idempotency_key=idempotency_key)
 
-    def _is_ssl_enabled(self) -> bool:
+    @property
+    def is_certificate_email_required(self) -> bool:
+        """Whether a new domain needs a Let's Encrypt email that the bench does not have yet."""
+        bench_config = self.site.bench.config
+        return bench_config.production.enabled and not bench_config.letsencrypt.email and self.is_tls_enabled
+
+    @property
+    def is_certificate_pending(self) -> bool:
+        """Whether a certificate task for this bench is still queued or running."""
+        from pilot.managers.task import TaskReader
+        from pilot.tasks.setup_letsencrypt import SetupLetsEncryptTask
+
+        return any(
+            task.command == SetupLetsEncryptTask.command and task.status.is_active
+            for task in TaskReader(self.site.bench.path).list_tasks(limit=None)
+        )
+
+    @property
+    def is_tls_enabled(self) -> bool:
         try:
             config = json.loads((self.site.path / "site_config.json").read_text())
         except Exception:
@@ -110,10 +130,16 @@ class SiteDomains:
         is_primary: bool,
     ) -> dict[str, str | bool]:
         route = config.route_for(domain)
+        tls = route.public_tls
+        if tls and config.configured_route_for(domain) is None:
+            from pilot.managers.nginx import NginxManager
+
+            # A direct route serves TLS only once a certificate covers the domain.
+            tls = domain in NginxManager(self.site.bench).serviceable_tls_domains(config, ssl_ready=True)
         return {
             "domain": domain,
             "is_site": domain == config.name,
             "is_primary": is_primary,
             "public_scheme": route.public_scheme,
-            "tls": route.public_tls,
+            "tls": tls,
         }

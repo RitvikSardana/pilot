@@ -17,7 +17,7 @@ This separation lets Pilot stop safely, show a useful failure later, and continu
 `MigrationOperation` is the durable source of truth. It records:
 
 - whether this is an app update or a standalone site migration;
-- the selected apps, repository URLs, and original and updated commit SHAs;
+- the selected apps, repository URLs, original and updated commit SHAs, and whether each app needs a migrate;
 - the sites, in migration order;
 - each site's backup and migration status;
 - the current workflow state;
@@ -73,15 +73,27 @@ completed
 
 A standalone site migration uses the same workflow but skips the app-update step. It runs in place: it takes no safeguard backup, so it cannot be reverted. A branch switch also uses this workflow, and it does take the safeguard backups.
 
-
 Before the first task is queued, Pilot:
 
-1. records every site's maintenance and scheduler settings;
-2. puts every affected site into maintenance mode;
+1. records each migrating site's maintenance and scheduler settings;
+2. puts those sites into maintenance mode;
 3. saves the operation;
-4. queues the first backup task.
+4. queues the first task.
 
-Putting all sites into maintenance mode first prevents writes while the bench is partly updated.
+Putting the sites into maintenance mode first prevents writes while the bench is partly updated.
+
+### Which Sites Are Migrated
+
+An update backs up and migrates sites only when an app change needs a migrate. When the update is created, Pilot compares each app's installed commit with its target commit. An app needs a migrate when the diff changes any of these, the same rule Frappe Cloud uses:
+
+- `<app>/patches.txt`
+- `<app>/hooks.py`
+- `<app>/fixtures/`
+- `<app>/<module>/custom/`
+- a doctype-style JSON file, `<app>/<module>/<type>/<name>/<name>.json`
+- `frappe/geo/languages.json`
+
+When Pilot cannot read the diff, it assumes a migrate is needed. When any selected app needs a migrate, every affected site is backed up and migrated. When none does, the update only updates the apps, rebuilds the assets, and restarts the services, and the update dialog hides the backup option. Each app records the result in `has_migrate_changes`. The rule is in `AppRepository.has_migrate_changes`.
 
 ## How the State Machine Works
 
@@ -212,6 +224,8 @@ Pilot stops before updating code, records the failed site, and restores every si
 ### Update or migration failure
 
 Pilot moves the operation to `needs_attention`. Sites remain protected while the user investigates or chooses a recovery action.
+
+A backup, update or migrate task that is cancelled, or whose process dies, has the same result: its failure callback moves the operation to `needs_attention` with the diagnosis "The task stopped before it finished", so the user can retry or revert. A stopped backup also restores the sites' maintenance settings. The callback does nothing when the task had already queued the next task.
 
 Every app is checked out to its target revision first, then validated as a group, before anything is installed or built.
 A failure there means no app has been reinstalled yet, so `RevertAppsTask` only has commits to check back out. See

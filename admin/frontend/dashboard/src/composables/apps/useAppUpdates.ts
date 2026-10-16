@@ -7,6 +7,7 @@ import { isTaskActive } from '@/utils/taskFormat'
 interface AppVersionUpdate {
   current: string
   target: string
+  has_migrate_changes?: boolean
 }
 
 const updates = ref<Record<string, AppVersionUpdate>>({})

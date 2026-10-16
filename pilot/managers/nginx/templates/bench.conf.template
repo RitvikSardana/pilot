@@ -3,6 +3,14 @@ upstream bench-{{ upstream_name }} {
     keepalive 32;
 }
 
+{% if realtime_socket %}
+# The realtime unit may use either target. max_fails=0 retries the socket on every request.
+upstream realtime-{{ upstream_name }} {
+    server unix:{{ realtime_socket }} max_fails=0;
+    server 127.0.0.1:{{ realtime_port }} backup;
+}
+{% endif %}
+
 {% if proxy_gate_enabled %}
 geo $realip_remote_addr {{ proxy_gate_variable }} {
     default 0;
@@ -25,6 +33,15 @@ server {
     }
 
     {% if alias.redirect %}
+    {% if alias.site %}
+    {# Central probes the alias for readiness without following redirects. #}
+    location = /api/method/ping {
+        proxy_pass         {{ alias.proxy_pass }};
+        proxy_set_header   Host               $host;
+        proxy_set_header   X-Frappe-Site-Name {{ alias.site }};
+    }
+
+    {% endif %}
     location / {
         return 301 {{ alias.redirect }}$request_uri;
     }
@@ -63,7 +80,7 @@ server {
     }
 
     location /socket.io {
-        proxy_pass         http://127.0.0.1:{{ socketio_port }};
+        proxy_pass         {{ socketio_upstream }};
         proxy_http_version 1.1;
         proxy_set_header   Upgrade $http_upgrade;
         proxy_set_header   Connection "upgrade";
@@ -110,6 +127,12 @@ server {
     if ($bench_from_proxy = 0) { return 403; }
     set $pilot_scheme $http_x_forwarded_proto;
     if ($pilot_scheme = "") { set $pilot_scheme $scheme; }
+
+    {% elif cloudflare_networks %}
+    {% for network in cloudflare_networks %}
+    set_real_ip_from   {{ network }};
+    {% endfor %}
+    real_ip_header     CF-Connecting-IP;
 
     {% endif %}
     {# firewall: first-match allow / deny #}
@@ -192,6 +215,12 @@ server {
     if ($bench_from_proxy = 0) { return 403; }
     set $pilot_scheme $http_x_forwarded_proto;
     if ($pilot_scheme = "") { set $pilot_scheme $scheme; }
+
+    {% elif cloudflare_networks %}
+    {% for network in cloudflare_networks %}
+    set_real_ip_from   {{ network }};
+    {% endfor %}
+    real_ip_header     CF-Connecting-IP;
 
     {% endif %}
     {# firewall: first-match allow / deny #}
@@ -289,7 +318,7 @@ server {
             set $pilot_socketio_origin {{ vhost.public_scheme }}://$http_host;
         }
 
-        proxy_pass         http://127.0.0.1:{{ socketio_port }};
+        proxy_pass         {{ socketio_upstream }};
         proxy_http_version 1.1;
         proxy_set_header   Upgrade $http_upgrade;
         proxy_set_header   Connection "upgrade";

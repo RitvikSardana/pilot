@@ -10,6 +10,18 @@ from pilot.managers.environment import PythonEnvManager
 from .git_repository import git
 
 
+@pytest.mark.parametrize("declaration", ['build_dir = "desk"', 'index_html_path = "frappe/www/custom.html"'])
+def test_declared_asset_builds_skip_incomplete_standard_output_cache(source, declaration):
+    from pilot.core.bench.build_artifacts import BuildArtifacts
+
+    app = source.app("frappe")
+    assert BuildArtifacts.get_app_key(app) is not None
+    project = app.path / "pyproject.toml"
+    project.write_text(f"[tool.bench.assets]\n{declaration}\n")
+
+    assert BuildArtifacts.get_app_key(app) is None
+
+
 @pytest.mark.parametrize("failure", ["directory", "copy", "rename"])
 def test_asset_cache_failure_keeps_completed_build(source, monkeypatch, caplog, failure):
     from pathlib import Path

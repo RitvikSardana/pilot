@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useTranslation } from '../translation'
-import { getAccountUrl, reconcilePaymentSetup, removePaymentMethod } from '@frappe/cloud-sdk/api'
+import { reconcilePaymentSetup, removePaymentMethod } from '@frappe/cloud-sdk/api'
 import { Button, ErrorMessage } from 'frappe-ui'
 import { computed, ref, watch } from 'vue'
 import AddPaymentCard from '../components/AddPaymentCard.vue'
@@ -23,12 +23,11 @@ const store = props.store
 const flow = ref('')
 const removing = ref(false)
 const removeError = ref('')
-const openingChangePlan = ref(false)
-const changePlanError = ref('')
 const paymentSetupError = ref('')
 
 const load = async () => {
   paymentSetupError.value = ''
+  store.loadAccountLinks()
   await store.loadBilling(true)
 
   try {
@@ -90,26 +89,7 @@ const removeCard = async () => {
   }
 }
 
-const openChangePlan = async () => {
-  if (openingChangePlan.value) return
-
-  openingChangePlan.value = true
-  changePlanError.value = ''
-
-  try {
-    const response = store.state.context?.account_url
-      ? { url: store.state.context.account_url }
-      : await getAccountUrl()
-
-    if (!response?.url) throw new Error(__('Central is not configured.'))
-
-    openExternal(response.url)
-  } catch (exception) {
-    changePlanError.value = getErrorMessage(exception)
-  } finally {
-    openingChangePlan.value = false
-  }
-}
+const changePlanUrl = computed(() => store.state.accountLinks?.change_plan)
 </script>
 
 <template>
@@ -144,12 +124,12 @@ const openChangePlan = async () => {
       <Button
         class="mt-5"
         icon-right="lucide-arrow-up-right"
-        :disabled="openingChangePlan"
-        :label="openingChangePlan ? __('Opening…') : __('View plans')"
-        @click="openChangePlan"
+        :disabled="!changePlanUrl"
+        :label="__('View plans')"
+        @click="openExternal(changePlanUrl)"
       />
 
-      <ErrorMessage :message="changePlanError" class="mt-2" />
+      <ErrorMessage :message="store.state.accountLinksError" class="mt-2" />
     </div>
 
     <div v-else-if="billing" class="space-y-4">
@@ -168,12 +148,12 @@ const openChangePlan = async () => {
         <Button
           class="mt-3 justify-self-start sm:col-start-2 sm:row-span-2 sm:row-start-1 sm:mt-0"
           icon-right="lucide-arrow-up-right"
-          :disabled="openingChangePlan"
-          :label="openingChangePlan ? __('Opening…') : __('Change plan')"
-          @click="openChangePlan"
+          :disabled="!changePlanUrl"
+          :label="__('Change plan')"
+          @click="openExternal(changePlanUrl)"
         />
 
-        <ErrorMessage :message="changePlanError" class="mt-2 sm:col-span-2" />
+        <ErrorMessage :message="store.state.accountLinksError" class="mt-2 sm:col-span-2" />
       </section>
 
       <div class="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-3">

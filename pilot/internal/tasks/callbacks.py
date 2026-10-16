@@ -99,11 +99,19 @@ def _reload_workers(meta: dict, args: dict) -> None:
     Bench(Path(meta["bench_root"])).reload_workers(web_only=args.get("web_only", False))
 
 
+def _fail_migration_step(meta: dict, args: dict) -> None:
+    from pilot.core.bench import Bench
+
+    operation = Bench(Path(meta["bench_root"])).migrations.get(args["operation_id"])
+    operation.fail_stopped_step(meta["task_id"], args["phase"], args.get("site"))
+
+
 _OPERATIONS: dict[str, CallbackOperation] = {
     "cleanup-site-restore": _cleanup_site_restore,
     "remove-failed-site": _remove_failed_site,
     "disable-site-ssl": _disable_site_ssl,
     "reload-workers": _reload_workers,
+    "fail-migration-step": _fail_migration_step,
 }
 
 

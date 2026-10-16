@@ -7,3 +7,4 @@ class AppConfig:
     repo: str
     branch: str
     branches: list[str] = field(default_factory=list)
+    follow_branch: bool = False

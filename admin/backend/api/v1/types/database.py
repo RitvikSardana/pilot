@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from pilot.core.database.base import BinlogStatus, LockWaitStatus
 from pilot.core.database.configurations import DatabaseConfigurationEditor
@@ -79,11 +79,27 @@ class MaxConnectionsCapability(DatabaseActionCapability):
     requires_restart: bool
 
 
+class MemoryShareStep(TypedDict):
+    share: float
+    innodb_buffer_pool_mb: int
+    memory_max_mb: int
+
+
+class MemoryShareCapability(DatabaseActionCapability):
+    current: float | None
+    min: float | None
+    max: float | None
+    total_memory_mb: int | None
+    steps: list[MemoryShareStep]
+    requires_restart: bool
+
+
 class DatabaseActionCapabilities(TypedDict):
     restart: RestartCapability
     performance_schema: PerformanceSchemaCapability
     innodb_buffer_pool_size: InnoDBBufferPoolCapability
     max_connections: MaxConnectionsCapability
+    memory_share: NotRequired[MemoryShareCapability]
     manage_binlogs: DatabaseActionCapability
 
 

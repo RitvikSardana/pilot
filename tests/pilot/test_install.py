@@ -361,3 +361,31 @@ def test_only_the_last_two_releases_are_supported(os_release: str, supported: bo
     result = run_installer_functions(f"require_supported_release {release_file}", tmp_path)
 
     assert (result.returncode == 0) is supported
+
+
+@pytest.mark.parametrize("user_exists", [False, True])
+def test_a_created_bench_user_gets_the_user_bus_in_bashrc(user_exists: bool, tmp_path: Path) -> None:
+    """`systemctl --user` needs both variables in a shell opened with `su` or `sudo -iu`."""
+    home = tmp_path / "home"
+    home.mkdir()
+    result = run_installer_functions(
+        f"""
+id() {{ {"return 0" if user_exists else "return 1"}; }}
+useradd() {{ :; }}
+usermod() {{ :; }}
+chown() {{ :; }}
+getent() {{ echo "frappe:x:1001:1001::{home}:/bin/bash"; }}
+create_bench_user frappe
+""",
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    bashrc = home / ".bashrc"
+    if user_exists:
+        assert not bashrc.exists()
+    else:
+        assert bashrc.read_text() == (
+            'export XDG_RUNTIME_DIR="/run/user/$(id -u)"\n'
+            'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"\n'
+        )

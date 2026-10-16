@@ -128,6 +128,13 @@ class OffsiteBackup:
                 break
         return runs
 
+    def get_file_sizes(self, site_name: str, timestamp: str) -> dict[str, int]:
+        """Size in bytes of each uploaded file of one run, keyed by filename."""
+        prefix = BackupKeys(site_name).get_file_key(timestamp, "")
+        return {
+            key.removeprefix(prefix): size for key, size in self.s3.get_object_sizes(self.bucket, prefix).items()
+        }
+
     def get_backup(self, site_name: str, timestamp: str) -> dict[str, str] | None:
         """Return one offsite backup run from its monthly metadata file."""
         keys = BackupKeys(site_name)

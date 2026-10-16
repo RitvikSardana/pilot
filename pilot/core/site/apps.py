@@ -6,7 +6,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from pilot.exceptions import BenchError
-from pilot.integrations.marketplace import Marketplace
 from pilot.utils import run_command
 
 if TYPE_CHECKING:
@@ -66,8 +65,23 @@ class SiteApps:
             cmd.append("--force")
         try:
             run_command(cmd, cwd=self.site.bench.sites_path, stream_output=True)
+            self.restore_installed_apps_copy()
         finally:
             self._clear_cache()
+
+    def restore_installed_apps_copy(self) -> None:
+        """Frappe clears its installed apps cache before it commits an uninstall, so a process
+        that reads in between caches the old list, and Frappe copies it to site_config.json."""
+        from pilot.core.site.config import query_installed_apps_setting_via_db, set_site_config_values
+
+        if not (self.site.path / "site_config.json").exists():
+            return
+        copy = self._site_config().get("installed_apps")
+        if not isinstance(copy, list):
+            return
+        committed = query_installed_apps_setting_via_db(self.site.bench.path, self.site.config.name)
+        if committed is not None and committed != copy:
+            set_site_config_values(self.site.bench.sites_path, self.site.config.name, {"installed_apps": committed})
 
     def disabled_apps(self) -> list[str]:
         from pilot.core.site.config import query_disabled_apps_via_db
@@ -114,7 +128,7 @@ class SiteApps:
         """Take the app out of use on the site, keeping its schema and data."""
         if not self.site.bench.has_app_disabling:
             raise BenchError("This bench's Frappe version cannot disable apps. Uninstall it instead.")
-        if app.config.name not in Marketplace.registry_by_name():
+        if not app.is_marketplace:
             raise BenchError(f"App '{app.config.name}' is not a marketplace app and cannot be disabled.")
         self._toggle_app("disable-app", app)
 
@@ -168,19 +182,42 @@ class SiteApps:
         app_names: list[str],
         force: bool,
         on_progress: Callable[[str], None],
+        remove_from_bench: bool = True,
     ) -> None:
+        """Uninstall apps from this site, and remove from the bench an app that no site uses
+        any more. `remove_from_bench=False` keeps it on the bench."""
         if not self.site.exists:
             raise BenchError(f"Site '{self.site.config.name}' does not exist.")
 
         installed = self.site.list_apps()
         for app_name in app_names:
-            app = self.site.bench.app(app_name)
+            try:
+                app = self.site.bench.app(app_name)
+            except BenchError:
+                self.forget_missing_app(app_name, on_progress)
+                continue
             if not force and installed and app.config.name not in installed:
                 raise BenchError(f"App '{app_name}' is not installed on site '{self.site.config.name}'.")
             on_progress(f"Uninstalling '{app_name}' from site '{self.site.config.name}'...")
             self.site.uninstall_app(app, force=force)
             on_progress(f"'{app_name}' uninstalled from '{self.site.config.name}'.")
-            self.remove_app_if_not_on_any_site(app_name, on_progress)
+            if remove_from_bench:
+                self.remove_app_if_not_on_any_site(app_name, on_progress)
+
+    def forget_missing_app(self, app_name: str, on_progress: Callable[[str], None]) -> None:
+        """Drop an app the site lists but the bench does not have, as after a restore from
+        another bench. Frappe cannot import it to uninstall, so only the listing goes."""
+        on_progress(f"'{app_name}' is not on this bench; removing it from the site's installed apps...")
+        try:
+            run_command(
+                self.site._frappe_call(
+                    "frappe", "--site", self.site.config.name, "remove-from-installed-apps", app_name
+                ),
+                cwd=self.site.bench.sites_path,
+                stream_output=True,
+            )
+        finally:
+            self._clear_cache()
 
     def remove_app_if_not_on_any_site(
         self,

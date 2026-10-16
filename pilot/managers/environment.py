@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pilot.core.app.node_packages import PACKAGE_MANAGERS, YARN, get_app_packages
-from pilot.exceptions import BenchError
+from pilot.exceptions import BenchError, CommandError
 from pilot.managers.platform import add_mysqlclient_flags, is_macos, which
 from pilot.managers.python_assets import PythonAssetBuilder
 from pilot.utils import run_command
@@ -167,17 +167,38 @@ class PythonEnvManager:
         return env
 
     def install_app(self, app: "App") -> None:
-        self.install_apps([app])
+        """Install the app editable. A dev extra that does not resolve does not block it."""
+        target = app.editable_target
+        try:
+            self._install_editable(target)
+        except CommandError:
+            if target == str(app.path):
+                raise
+            print(
+                f"Warning: the dev extra of {app.config.name} does not install; installing {app.config.name} without it."
+            )
+            self._install_editable(str(app.path))
 
     def install_apps(self, apps: list["App"]) -> None:
         """Resolve editable apps together in the destination environment."""
         if not apps:
             return
+        targets = [app.editable_target for app in apps]
+        bare_targets = [str(app.path) for app in apps]
+        try:
+            self._install_editable(*targets)
+        except CommandError:
+            if targets == bare_targets:
+                raise
+            print("Warning: the dev extras do not install; installing apps without them.")
+            self._install_editable(*bare_targets)
+
+    def _install_editable(self, *targets: str) -> None:
         uv = ensure_uv()
         python = str(self.bench.env_path / "bin" / "python")
-        targets = [argument for app in apps for argument in ("-e", app.editable_target)]
+        arguments = [argument for target in targets for argument in ("-e", target)]
         run_command(
-            [uv, "pip", "install", "--python", python, *targets],
+            [uv, "pip", "install", "--python", python, *arguments],
             stream_output=True,
             env=self._build_env(),
         )

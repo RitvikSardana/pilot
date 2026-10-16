@@ -89,6 +89,10 @@ class TaskProcess:
             return ProcessOwnership.UNKNOWN
 
     def reconcile(self) -> str | None:
+        # The wrapper waits until its process record exists, so a running task without one
+        # never started: its worker stopped between the claim and the start.
+        for task_id in self._store.running_task_ids_without_process():
+            self.interrupt(task_id)
         for task_id in self._store.task_ids_with_process():
             ownership = self.ownership(task_id)
             if ownership == ProcessOwnership.UNKNOWN:

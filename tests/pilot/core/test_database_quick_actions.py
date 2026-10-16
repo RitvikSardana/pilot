@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -42,6 +42,7 @@ def _manager(
     manager.innodb_buffer_pool_size_mb.return_value = 128
     manager.innodb_buffer_pool_size_max_mb.return_value = 352
     manager.max_connections.return_value = 50
+    manager.host_memory_mb = 4096
     return manager
 
 
@@ -65,6 +66,7 @@ def test_database_section_capabilities_are_returned_for_every_engine(
         "performance_schema",
         "innodb_buffer_pool_size",
         "max_connections",
+        "memory_share",
         "manage_binlogs",
     }
     assert all(action["available"] is False for action in result["actions"].values())
@@ -245,3 +247,50 @@ def test_sizing_actions_reject_invalid_values(
         pytest.raises(ValueError, match=message),
     ):
         getattr(actions, method)(value)
+
+
+def test_the_memory_split_previews_the_sizing_of_each_share() -> None:
+    with patch(f"{MODULE}.is_linux", return_value=True):
+        capability = DatabaseQuickActions(_config(), _manager()).capabilities()["actions"]["memory_share"]
+
+    assert (capability["current"], capability["min"], capability["max"]) == (0.5, 0.2, 0.8)
+    assert capability["total_memory_mb"] == 4096
+    shares = [step["share"] for step in capability["steps"]]
+    assert shares[0] == 0.2 and shares[-1] == 0.8 and 0.5 in shares
+    pools = [step["innodb_buffer_pool_mb"] for step in capability["steps"]]
+    assert pools == sorted(pools)
+
+
+@pytest.mark.parametrize("share", [0.1, 0.9, "0.5"])
+def test_a_memory_share_outside_the_range_is_refused(share) -> None:
+    with patch(f"{MODULE}.is_linux", return_value=True), pytest.raises(ValueError, match=r"between 0\.2 and 0\.8"):
+        DatabaseQuickActions(_config(), _manager()).require_memory_share(share)
+
+
+def test_setting_the_memory_share_saves_it_for_every_bench_and_sizes_mariadb(tmp_path) -> None:
+    from pilot.config.common import CommonConfig
+
+    manager = _manager()
+    manager.database_action_lock.return_value = MagicMock()
+    actions = DatabaseQuickActions(_config(), manager)
+    with patch(f"{MODULE}.is_linux", return_value=True):
+        actions.set_memory_share(0.65, tmp_path)
+
+    assert CommonConfig.read(tmp_path).mariadb.memory_share == 0.65
+    assert actions.config.mariadb.memory_share == 0.65
+    manager.tune_to_host_locked.assert_called_once()
+
+
+def test_a_memory_share_that_fails_to_apply_is_not_saved(tmp_path) -> None:
+    """Another bench can hold the database lock; the saved share must match the server."""
+    from pilot.config.common import CommonConfig
+    from pilot.exceptions import DatabaseError
+
+    manager = _manager()
+    manager.database_action_lock.side_effect = DatabaseError("Another database action is already running.")
+    actions = DatabaseQuickActions(_config(), manager)
+    with patch(f"{MODULE}.is_linux", return_value=True), pytest.raises(DatabaseError):
+        actions.set_memory_share(0.65, tmp_path)
+
+    assert CommonConfig.read(tmp_path).mariadb.memory_share != 0.65
+    manager.tune_to_host_locked.assert_not_called()

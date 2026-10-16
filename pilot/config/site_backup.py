@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from pilot.config.backup import BackupConfig
-from pilot.utils import write_private_text
+from pilot.internal.atomic_file import exclusive_file_lock, replace_private_text_locked
 
 _KEY = "backup_retention"
 _FIELDS = set(BackupConfig().__dict__)
@@ -22,15 +22,17 @@ def read_retention(site_config_path: Path) -> BackupConfig | None:
 
 
 def write_retention(site_config_path: Path, config: BackupConfig) -> None:
-    data = _load(site_config_path)
-    data[_KEY] = asdict(config)
-    write_private_text(site_config_path, json.dumps(data, indent=1))
+    with exclusive_file_lock(site_config_path):
+        data = _load(site_config_path)
+        data[_KEY] = asdict(config)
+        replace_private_text_locked(site_config_path, json.dumps(data, indent=1))
 
 
 def clear_retention(site_config_path: Path) -> None:
-    data = _load(site_config_path)
-    if data.pop(_KEY, None) is not None:
-        write_private_text(site_config_path, json.dumps(data, indent=1))
+    with exclusive_file_lock(site_config_path):
+        data = _load(site_config_path)
+        if data.pop(_KEY, None) is not None:
+            replace_private_text_locked(site_config_path, json.dumps(data, indent=1))
 
 
 def _load(path: Path) -> dict:

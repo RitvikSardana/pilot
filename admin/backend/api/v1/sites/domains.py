@@ -114,8 +114,16 @@ def list_domains(name: str):
     if not site_exists(bench_root, name):
         return site_not_found()
     try:
-        rows, primary = _site_domains(bench_root, name).describe()
-        return jsonify({"domains": rows, "primary": primary})
+        domains = _site_domains(bench_root, name)
+        rows, primary = domains.describe()
+        return jsonify(
+            {
+                "domains": rows,
+                "primary": primary,
+                "certificate_email_required": domains.is_certificate_email_required,
+                "certificate_pending": domains.is_certificate_pending,
+            }
+        )
     except BenchError as error:
         return _domain_failure(error, "Could not read site domains.")
     except Exception:
@@ -146,23 +154,33 @@ def add_domain(name: str):
     bench_root = Path(current_app.config["BENCH_ROOT"])
     if not site_exists(bench_root, name):
         return site_not_found()
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return malformed_body()
-    fields = text_fields(data, "domain")
-    if fields is None:
-        return invalid_fields()
-    domain = fields["domain"]
-    if err := validate_site_name(domain):
-        return error_response("invalid_domain", err, 422)
+    fields, response = _add_domain_request()
+    if response is not None:
+        return response
     try:
-        _site_domains(bench_root, name).register(domain)
-        task_id = _apply_domains(bench_root, name)
+        domains = _site_domains(bench_root, name)
+        domains.register(fields["domain"])
+        task_id = domains.apply_task(email=fields["email"])
     except BenchError as error:
         return _domain_failure(error, "Could not attach the domain.")
     except Exception:
         return internal_error("Could not attach the domain.")
     return accepted_task_response(bench_root, task_id)
+
+
+def _add_domain_request():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return None, malformed_body()
+    fields = text_fields(data, "domain", "email")
+    if fields is None:
+        return None, invalid_fields()
+    if err := validate_site_name(fields["domain"]):
+        return None, error_response("invalid_domain", err, 422)
+    # Optional: without any email the domain is served over HTTP until one is set.
+    if fields["email"] and (err := validate_email(fields["email"])):
+        return None, error_response("invalid_email", err, 422, {"needs_email": True})
+    return fields, None
 
 
 @sites_bp.get("/<name>/domains/<domain>")

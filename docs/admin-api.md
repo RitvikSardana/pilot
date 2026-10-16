@@ -63,11 +63,11 @@ Task-starting endpoints should return:
 
 ### Site Apps
 
-`GET /sites/<name>/apps` returns the apps in use on the site, disabled ones excluded, plus `can_disable` for whether this bench's Frappe supports disabling at all.
+`GET /sites/<name>/apps` returns the apps in use on the site, disabled ones excluded, plus `can_disable` for whether this bench's Frappe supports disabling at all. Each app has `is_marketplace` when its repository is the one the registry lists; the registry's links and metadata apply only then, so a fork keeps its own. An app the site lists but the bench does not have, for example after a restore from another bench, has `missing: true`. Uninstalling such an app removes it from the site's installed apps only.
 
 Two app operations answer inline instead of returning a task id, because both are flag flips on data that never left the site:
 
-- `DELETE /sites/<name>/apps/<app>?mode=disable` returns `{"app": ..., "disabled": true}`. Without the parameter the route queues an uninstall as before.
+- `DELETE /sites/<name>/apps/<app>?mode=disable` returns `{"app": ..., "disabled": true}`. Without the parameter the route queues an uninstall. When no site uses the app any more, the uninstall also removes it from the bench; `remove_from_bench=false` keeps it there. The dashboard sends `remove_from_bench=false`.
 - `POST /sites/<name>/apps` for an app the site only has disabled returns `{"app": ..., "enabled": true}`. It falls through to the install queue when a required app has to be installed first.
 
 ### Site Detail And Login
@@ -80,7 +80,9 @@ Every `/sites/<name>/...` route accepts the site's directory name or any hostnam
 
 `DELETE /sites/<name>` queues `drop-site`. Frappe takes a full backup before the drop; pass `?no_backup=1` to skip it on large sites you do not need to keep.
 
-`GET /sites/<name>/domains` returns one row for each hostname. Each row has `domain`, `is_site`, `is_primary`, `public_scheme`, and `tls`.
+`GET /sites/<name>/domains` returns one row for each hostname. Each row has `domain`, `is_site`, `is_primary`, `public_scheme`, and `tls`. For a hostname that this host serves directly, `tls` is true only when the certificate covers it. The response also has `certificate_email_required`: true when the site uses TLS, the bench is in production, and no Let's Encrypt email is set. It also has `certificate_pending`: true while a `setup-letsencrypt` task for the bench is queued or running. The Admin shows "Certificate pending" on rows without TLS and reads the list again until it is false.
+
+`POST /sites/<name>/domains` takes `{"domain": "..."}` and an optional `email`. The email is saved as the Let's Encrypt account email before certificates are issued; an invalid one returns `422` with `{"needs_email": true}`. Without any email, the domain is attached and served over HTTP until an email is set.
 
 `POST /sites/<name>/login` returns `{"url": ...}` plus an optional `hint` when the URL's host does not resolve on the server - the UI surfaces it so the user knows to add a hosts entry or use a `*.localhost` name.
 
@@ -114,7 +116,7 @@ Measuring means a `du` per site directory and one schema-size query, so the rout
 
 ### Backups And Restore
 
-Pilot writes backup runs to `sites/<site>/backups`. Frappe prunes `private/backups` on every backup and every hour, so Pilot keeps its runs out of that directory and its retention policy is the only pruner.
+Pilot writes backup runs to `sites/<site>/backups`. Frappe prunes `private/backups` on every backup and every hour, so Pilot keeps its runs out of that directory and its retention policy is the only pruner. `POST /sites/<name>/backups` returns `409` while another task owns the site, such as a restore, rename or drop.
 
 `POST /sites/<name>/actions/restore` queues `restore-site`. The body has `parts`, a list of `database`, `public`, `private`, and `config`, an optional `skip_failing_patches` boolean, and one source:
 
@@ -131,7 +133,7 @@ A remote source needs a bench session and an `https://` site. The Administrator 
 
 `POST /sites/<name>/actions/restore-upload` takes the same `parts` and `skip_failing_patches` (`"true"`) as multipart form fields, plus the files `database`, `public`, `private`, and `config` (the site config backup). nginx `client_max_body_size` limits the upload size.
 
-A restore puts the site in maintenance mode, restores only the chosen parts, and migrates it. It restores the files before the database. From a remote site or Frappe Cloud, the file archives and a MariaDB database stream into the site as they download, so they need no copy on disk. The site stays in maintenance mode for the download time. `skip_failing_patches` passes `--skip-failing` to the migration. It takes no backup of the site first. A database from another site brings that site's encryption key. The `config` part merges the source site config into this site, except the keys that belong to this site: `db_*`, `redis_*`, `pilot_*`, `atlas_*`, `rds_db`, `host_name`, `installed_apps`, `maintenance_mode`, and `pause_scheduler`. A config restored without its database keeps this site's `encryption_key`, so the passwords in this site's database stay readable. If a step fails, the site stays in maintenance mode. Restoring from another site needs a bench session; a site token can only restore its own backups.
+A restore puts the site in maintenance mode, restores only the chosen parts, and migrates it. It restores the files before the database. From a remote site or Frappe Cloud, the file archives and a MariaDB database stream into the site as they download, so they need no copy on disk. The site stays in maintenance mode for the download time. `skip_failing_patches` passes `--skip-failing` to the migration. It takes no backup of the site first. A database from another site brings that site's encryption key. The `config` part merges the source site config into this site, except the keys that belong to this site: `db_*`, `redis_*`, `pilot_*`, `atlas_*`, `rds_db`, `maintenance_mode`, `pause_scheduler`, `email_sender_name`, and the keys a site-scoped config change cannot set either, such as `host_name`, `domains`, `route`, `ssl`, `cert_name`, `backup_retention`, and `installed_apps`. A config restored without its database keeps this site's `encryption_key`, so the passwords in this site's database stay readable. If a step fails, the site stays in maintenance mode. Restoring from another site needs a bench session; a site token can only restore its own backups.
 
 #### Chunked uploads
 

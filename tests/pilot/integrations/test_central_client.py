@@ -248,7 +248,12 @@ def test_account_url_returns_the_endpoint_from_metadata(tmp_path: Path) -> None:
     response = client.get("/api/v1/sites/s1.localhost/account-url")
 
     assert response.status_code == 200
-    assert response.get_json() == {"url": "https://central.test"}
+    assert response.get_json() == {
+        "url": "https://central.test",
+        "billing": "https://central.test/dashboard/billing",
+        "change_plan": "https://central.test/dashboard/servers?pilot=vm-1&action=resize",
+        "server": "https://central.test/dashboard/servers?pilot=vm-1&action=open-bench",
+    }
 
 
 def test_account_url_requires_a_staged_credential(tmp_path: Path) -> None:

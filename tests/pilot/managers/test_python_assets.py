@@ -42,6 +42,7 @@ def build_app(app_path: Path, on_install: Callable[[], None] = lambda: None) -> 
 
     with (
         patch("pilot.core.app.node_packages.shutil.which", side_effect=lambda name: name),
+        patch("pilot.managers.node_dependencies.NodeDependencies.get_key", return_value="installed"),
         patch("pilot.core.app.node_packages.run_command", side_effect=install),
         patch.object(builder, "run_compiler", side_effect=record),
     ):
@@ -155,3 +156,27 @@ def test_page_islands_are_built_with_frappe_s_own_script(tmp_path: Path) -> None
         builder.build_page_islands()
 
     assert compile_islands.call_args.args[0] == ["node", str(script), "--production"]
+
+
+def test_a_declared_build_dir_gets_its_dependencies_when_only_the_root_has_them(tmp_path: Path) -> None:
+    """Helpdesk installs `desk` from a root postinstall, so an installed root hides a missing `desk`."""
+    app_path = tmp_path / "helpdesk"
+    write_package(
+        app_path, scripts={"postinstall": "cd desk && yarn install", "build": "cd desk && yarn build"}
+    )
+    (app_path / "yarn.lock").write_text("")
+    (app_path / "node_modules").mkdir()
+    (app_path / "node_modules" / ".yarn-integrity").write_text("{}")
+    (app_path / "node_modules" / ".pilot-install-key").write_text("installed")
+    write_package(app_path / "desk", scripts={"build": "vite build"})
+    (app_path / "desk" / "yarn.lock").write_text("")
+    (app_path / "pyproject.toml").write_text(
+        '[tool.bench.assets]\nbuild_dir = "./desk"\nout_dir = "./helpdesk/public/desk"\n'
+    )
+
+    commands = build_app(app_path)
+
+    assert commands == [
+        ["yarn", "install", "--frozen-lockfile"],
+        ["python", "frappe", "build", "--force", "--app", "helpdesk"],
+    ]

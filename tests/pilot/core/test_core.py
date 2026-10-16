@@ -1194,3 +1194,36 @@ def test_after_a_revert_a_disconnected_newer_release_is_still_offered(
     )
 
     assert app.update_target() == RevisionPin(kind="commit", ref=shas[3])
+
+
+@pytest.mark.parametrize("follow_branch", [False, True])
+def test_a_marketplace_app_follows_its_branch_tip_without_a_release_for_it_or_when_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, follow_branch: bool
+) -> None:
+    from unittest.mock import patch
+
+    app = _app_on_branch(tmp_path, "https://github.com/frappe/myapp", branch="my-feature")
+    app.config.follow_branch = follow_branch
+    released_branch = "my-feature" if follow_branch else "version-15"
+    _publish(
+        {
+            "name": "myapp",
+            "repo": "https://github.com/frappe/myapp",
+            "releases": [{"version": "1.0.0", "branch": released_branch, "commit": "a" * 40}],
+        }
+    )
+
+    with patch("pilot.internal.git.GitRepo.remote_branch_sha", return_value="b" * 40):
+        target = app.update_target()
+
+    assert target == RevisionPin(kind="commit", ref="b" * 40)
+
+
+def test_follow_branch_is_kept_in_bench_toml(tmp_path: Path) -> None:
+    bench = make_bench(tmp_path)
+    bench.config.apps.append(AppConfig(name="myapp", repo="https://github.com/frappe/myapp", branch="dev", follow_branch=True))
+    bench.config.write(tmp_path)
+
+    reread = BenchConfig.read(tmp_path).get_app_by_name("myapp")
+
+    assert reread.follow_branch is True

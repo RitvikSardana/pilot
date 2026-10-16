@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,6 +16,18 @@ if TYPE_CHECKING:
     from pilot.internal.git import GitRepo
 
 _FETCH_TIMEOUT_SECONDS = 30
+# Changes `frappe migrate` syncs into the database, as Frappe Cloud decides a migrate deploy.
+_MIGRATE_PATHS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\w+/patches\.txt",
+        r"\w+/hooks\.py",
+        r"\w+/fixtures/",
+        r"\w+/\w+/custom/",
+        r"frappe/geo/languages\.json",
+        r"\w+/\w+/\w+/(.+)/\1\.json",
+    )
+)
 
 
 class AppRepository:
@@ -57,15 +70,28 @@ class AppRepository:
         return pin is not None and not self.is_on_revision(pin)
 
     def update_target(self) -> RevisionPin | None:
-        """The fixed revision this app would update to, or None when there is none. (forward only)"""
-        entry = self.marketplace_entry
-        if entry:
-            release = self.forward_release(entry)
-            return RevisionPin.from_marketplace_release(release) if release else None
+        """The fixed revision this app would update to, or None (forward only). A marketplace
+        app follows the registry's releases, or its branch tip with `follow_branch` or no release."""
+        entry = None if self.app.config.follow_branch else self.marketplace_entry
+        release = self.newest_release(entry) if entry else None
+        if release is not None:
+            is_newer = self._is_ahead_of_installed(release["commit"], release.get("version", ""))
+            return RevisionPin.from_marketplace_release(release) if is_newer else None
         if not self.app.config.branch:
             return None
         tip = self.repo.remote_branch_sha(self.app.config.branch)
         return RevisionPin(kind="commit", ref=tip) if tip else None
+
+    def has_migrate_changes(self, pin: RevisionPin) -> bool:
+        """Whether moving to `pin` changes anything migrate syncs. True when the diff is unknown."""
+        repo = self.repo
+        if not repo.has_commit(pin.ref):
+            self._sync_remote_url()
+            repo.fetch(pin.ref, timeout=_FETCH_TIMEOUT_SECONDS)
+        files = repo.get_changed_files(self.installed_hash, pin.ref)
+        if files is None:
+            return True
+        return any(pattern.match(path) for pattern in _MIGRATE_PATHS for path in files)
 
     @property
     def marketplace_entry(self) -> dict | None:
@@ -79,22 +105,18 @@ class AppRepository:
             return None
         return entry
 
-    def forward_release(self, marketplace_entry: dict) -> dict | None:
-        """The newest release advertised for this app's branch, when git says it
-        is ahead of the checked-out commit. Releases arrive newest-first."""
+    def newest_release(self, marketplace_entry: dict) -> dict | None:
+        """The newest release the registry advertises for this app's branch."""
         from pilot.integrations.marketplace import Marketplace
 
-        newest = next(
+        return next(
             (
-                r
-                for r in Marketplace.releases(marketplace_entry["name"])
-                if r.get("branch") == self.app.config.branch
+                release
+                for release in Marketplace.releases(marketplace_entry["name"])
+                if release.get("branch") == self.app.config.branch and release.get("commit")
             ),
             None,
         )
-        if newest is None or not newest.get("commit"):
-            return None
-        return newest if self._is_ahead_of_installed(newest["commit"], newest.get("version", "")) else None
 
     def _is_ahead_of_installed(self, commit: str, version: str) -> bool:
         """Whether `commit` descends from HEAD. A stale registry can advertise an older

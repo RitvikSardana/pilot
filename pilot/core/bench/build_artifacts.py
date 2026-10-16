@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from pilot.core.app.node_packages import YARN
+from pilot.core.app.prebuilt_assets import asset_build_dirs, build_output_paths
 from pilot.core.bench.artifacts import BenchArtifacts
 from pilot.exceptions import CommandError
 from pilot.internal.atomic_file import exclusive_file_lock
@@ -58,7 +59,7 @@ class BuildArtifacts:
 
     @staticmethod
     def get_app_key(app) -> str | None:
-        if not (app.path / ".git").exists() or BuildArtifacts.has_custom_build_hooks(app):
+        if not (app.path / ".git").exists() or BuildArtifacts.has_custom_build(app):
             return None
         digest = hashlib.sha256(f"{app.config.name}:{app.module_name}".encode() + b"\0")
         digest.update(run_command(["git", "-C", str(app.path), "rev-parse", "HEAD"]).stdout)
@@ -113,7 +114,9 @@ class BuildArtifacts:
         return prefix
 
     @staticmethod
-    def has_custom_build_hooks(app) -> bool:
+    def has_custom_build(app) -> bool:
+        if asset_build_dirs(app) or build_output_paths(app):
+            return True
         hooks = app.path / app.module_name / "hooks.py"
         if not hooks.is_file():
             return False

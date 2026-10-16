@@ -79,6 +79,10 @@ class BenchSettings:
                 "service_restart_failed",
                 "Settings were saved, but running services could not be restarted.",
             ) from error
+        finally:
+            # A timed-out restart still finishes, so nginx follows the saved config.
+            if self.bench.config.production.enabled:
+                self._apply_nginx()
 
     def _apply_nginx_if_needed(self, old_firewall: dict, old_waf: dict) -> str | None:
         waf_changed = waf_payload(self.bench.config) != old_waf
@@ -93,6 +97,10 @@ class BenchSettings:
                 "ModSecurity is not installed on this host. Redeploy production to "
                 "install the WAF; it stays inactive until then."
             )
+        self._apply_nginx()
+        return warning
+
+    def _apply_nginx(self) -> None:
         try:
             regenerate_nginx(self.bench)
         except Exception as error:
@@ -100,7 +108,6 @@ class BenchSettings:
                 "nginx_apply_failed",
                 "Settings were saved, but nginx could not apply them.",
             ) from error
-        return warning
 
     def _sync_s3_if_needed(self, old_s3_config: dict) -> None:
         if s3_payload(self.bench.config) == old_s3_config:
@@ -257,9 +264,7 @@ def regenerate_configs(bench: "Bench") -> None:
 def regenerate_nginx(bench: "Bench") -> None:
     from pilot.managers.nginx import NginxManager
 
-    manager = NginxManager(bench)
-    manager.generate_config(ssl_ready=True)
-    manager.install_config()
+    NginxManager(bench).publish_config(ssl_ready=True)
 
 
 def restart_running_workload(bench: "Bench") -> bool:
@@ -325,7 +330,7 @@ def _restart_systemd(manager) -> bool:
         [*manager._systemctl(), "restart", *non_admin_units],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=120,
         env=env,
         check=True,
     )

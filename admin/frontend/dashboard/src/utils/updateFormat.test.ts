@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   matchesUpdateFilter,
+  needsMigrate,
   opTitle,
   patchSkipped,
   pendingActionLabel,
@@ -155,4 +156,17 @@ test('pendingActionLabel describes a queued action', () => {
   assert.equal(pendingActionLabel({ role: 'retry', status: 'queued' }), 'Retry queued')
   assert.equal(pendingActionLabel({ role: 'bypass_patch', status: 'queued' }), 'Skip patch queued')
   assert.equal(pendingActionLabel({ role: 'restore', status: 'running' }), 'Restore in progress')
+})
+
+test('needsMigrate is true when any selected app needs a migrate or has no flag', () => {
+  const updates = {
+    crm: { has_migrate_changes: false },
+    hrms: { has_migrate_changes: true },
+    helpdesk: {},
+  }
+  assert.equal(needsMigrate([], updates), false)
+  assert.equal(needsMigrate(['crm'], updates), false)
+  assert.equal(needsMigrate(['crm', 'hrms'], updates), true)
+  assert.equal(needsMigrate(['helpdesk'], updates), true)
+  assert.equal(needsMigrate(['unknown'], updates), true)
 })

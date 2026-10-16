@@ -22,6 +22,7 @@ def _app(pin: RevisionPin | None, *, on_revision: bool = False, head: str = "111
     app.is_on_revision.return_value = on_revision
     app.installed_hash = head
     app.marketplace_entry = None
+    app.has_migrate_changes.return_value = False
     return app
 
 
@@ -37,7 +38,7 @@ def test_run_reports_current_and_target_for_pending_update(tmp_path: Path, capsy
 
     app.update_target.assert_called_once_with()
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert result == {"helpdesk": {"current": "1111111111", "target": "2222222222"}}
+    assert result == {"helpdesk": {"current": "1111111111", "target": "2222222222", "has_migrate_changes": False}}
 
 
 def test_run_omits_apps_that_are_up_to_date(tmp_path: Path, capsys) -> None:
@@ -105,7 +106,7 @@ def test_run_uses_marketplace_versions_for_marketplace_apps(tmp_path: Path, caps
     FetchAppUpdatesTask(bench=bench, bench_root=tmp_path).run()
 
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert result == {"erpnext": {"current": "15.116.0", "target": "15.117.0"}}
+    assert result == {"erpnext": {"current": "15.116.0", "target": "15.117.0", "has_migrate_changes": False}}
 
 
 def test_run_keeps_commit_labels_without_a_matching_marketplace_line(tmp_path: Path, capsys) -> None:
@@ -121,7 +122,7 @@ def test_run_keeps_commit_labels_without_a_matching_marketplace_line(tmp_path: P
     FetchAppUpdatesTask(bench=bench, bench_root=tmp_path).run()
 
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert result == {"erpnext": {"current": "1111111111", "target": "2222222222"}}
+    assert result == {"erpnext": {"current": "1111111111", "target": "2222222222", "has_migrate_changes": False}}
 
 
 def test_run_ignores_non_git_dirs(tmp_path: Path) -> None:
@@ -152,4 +153,4 @@ def test_run_mixed_apps_combine_results(tmp_path: Path, capsys) -> None:
     FetchAppUpdatesTask(bench=bench, bench_root=tmp_path).run()
 
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert result == {"hrms": {"current": "1111111111", "target": "2222222222"}}
+    assert result == {"hrms": {"current": "1111111111", "target": "2222222222", "has_migrate_changes": False}}

@@ -349,7 +349,7 @@ const liveMeters = computed(() => {
     {
       label: 'CPU',
       percent: s.cpu_percent,
-      value: `${s.cpu_percent.toFixed(1)}% of ${s.cpu_count} vCPUs`,
+      value: `${s.cpu_percent.toFixed(1)}% of ${s.cpu_count} ${s.cpu_count === 1 ? 'vCPU' : 'vCPUs'}`,
     },
     {
       label: 'Memory',

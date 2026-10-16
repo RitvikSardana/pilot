@@ -7,6 +7,14 @@ export interface CloudContext {
   bundle?: { js?: string }
 }
 
+/** Central dashboard links for this site. */
+export interface AccountLinks {
+  url: string
+  billing: string
+  change_plan: string
+  server: string
+}
+
 export interface TaskSubmission { task_id: string }
 export interface TaskStatus { status?: string; exit_code?: number | null }
 
