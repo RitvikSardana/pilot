@@ -23,9 +23,9 @@ class AppRollout:
 
     @cached_property
     def settings(self) -> dict | None | Literal[False]:
-        """Central's `start_percent`, `step_percent`, `interval_hours` and `max_percent`. None when there is
-        no rollout and every update is offered at once. False when Central cannot answer or
-        sends bad steps, so new updates wait for it."""
+        """Central's `start_percent`, `step_percent`, `interval_hours`, `max_percent` and
+        `held_commits`. None when there is no rollout and every update is offered at once. False
+        when Central cannot answer or sends bad steps, so new updates wait for it."""
         from pilot.integrations.central.client import CentralClient, CentralClientError
 
         if not self.bench.config.central.enabled:
@@ -49,6 +49,10 @@ class AppRollout:
             print(f"App updates wait for Central: bad app rollout steps {settings!r}", flush=True)
             return False
 
+        if not self._has_valid_holds(settings):
+            print(f"App updates wait for Central: bad held commits {settings!r}", flush=True)
+            return False
+
         return settings
 
     def is_offered(self, app_name: str, commit: str) -> bool:
@@ -61,6 +65,10 @@ class AppRollout:
             return True
 
         if self.settings is False:
+            return False
+
+        if commit in self.settings.get("held_commits", []):
+            print(f"The {app_name} update waits: Central holds this release", flush=True)
             return False
 
         added_at = RegistryCache(cli_root()).get_added_at(app_name, commit)
@@ -127,3 +135,12 @@ class AppRollout:
                 return False
 
         return 0 <= settings["max_percent"] <= 100
+
+    @staticmethod
+    def _has_valid_holds(settings: dict) -> bool:
+        """The held commits are optional, so an older Central that sends none means no holds."""
+        held_commits = settings.get("held_commits", [])
+        if not isinstance(held_commits, list):
+            return False
+
+        return all(isinstance(commit, str) for commit in held_commits)

@@ -157,6 +157,26 @@ def test_an_update_waits_when_the_registry_has_no_time_for_it(tmp_path: Path, cl
         assert rollout.is_offered("frappe", "abc") is False
 
 
+def test_a_held_commit_is_not_offered_even_at_100_percent(tmp_path: Path, cli_root: Path) -> None:
+    _set_rollout_number(cli_root, 1)
+    rollout = _rollout(tmp_path)
+    rollout.settings = {**STEPS, "held_commits": ["bad"]}
+
+    with _added_hours_ago(1000):
+        assert rollout.is_offered("frappe", "bad") is False
+        assert rollout.is_offered("frappe", "good") is True
+
+
+def test_a_central_without_held_commits_holds_nothing(tmp_path: Path) -> None:
+    assert _settings_from_central(tmp_path, {"app_rollout": STEPS}) == STEPS
+
+
+@pytest.mark.parametrize("held_commits", ["abc", [1], [None]])
+def test_bad_held_commits_make_updates_wait(tmp_path: Path, held_commits: object) -> None:
+    steps = {**STEPS, "held_commits": held_commits}
+    assert _settings_from_central(tmp_path, {"app_rollout": steps}) is False
+
+
 def test_the_rollout_number_is_chosen_once(cli_root: Path) -> None:
     number = Server().get_rollout_number()
 
