@@ -208,6 +208,7 @@ def test_a_damaged_rollout_number_does_not_fail_the_update_log(
 
 def _repository(release: dict | None, is_offered: bool) -> AppRepository:
     app = MagicMock()
+    app.config.name = "frappe"
     app.config.branch = "main"
     app.config.follow_branch = False
     app.bench.app_rollout.is_offered.return_value = is_offered

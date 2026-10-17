@@ -72,7 +72,7 @@ class AppRepository:
             if not self._is_ahead_of_installed(release["commit"], release.get("version", "")):
                 return None
 
-            if not self.app.bench.app_rollout.is_offered(entry["name"], release["commit"]):
+            if not self.app.bench.app_rollout.is_offered(self.app.config.name, release["commit"]):
                 return None
 
             return RevisionPin.from_marketplace_release(release)

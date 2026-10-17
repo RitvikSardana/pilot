@@ -8,7 +8,6 @@ from typing import Any
 from pilot.exceptions import BenchError
 
 _TIMEOUT_SECONDS = 10
-# Admin requests wait on the config call, so a slow Central must not hold them for long.
 _CONFIG_TIMEOUT_SECONDS = 3
 
 

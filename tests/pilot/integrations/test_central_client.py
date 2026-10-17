@@ -200,7 +200,6 @@ def test_a_timeout_while_reading_is_wrapped() -> None:
     ):
         CentralClient().config()
 
-    # Admin requests wait on this call, so it gives up sooner than other Central calls.
     assert urlopen.call_args.kwargs["timeout"] < client_module._TIMEOUT_SECONDS
 
 
