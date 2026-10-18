@@ -24,6 +24,8 @@ const DB_TYPE_OPTIONS = [
   { label: 'MariaDB', value: 'mariadb' },
   { label: 'PostgreSQL', value: 'postgres' },
 ]
+// Frappe supports PostgreSQL only on develop.
+const POSTGRES_FRAMEWORK_BRANCH = 'develop'
 const STEP_TITLES: Record<string, string> = {
   database: 'Database',
   customize: 'Customize your bench',
@@ -95,6 +97,10 @@ export const useSetup = () => {
   const dbPortPlaceholder = computed(() => (dbType.value === 'mariadb' ? '3306' : '5432'))
   const resolvedDbUser = computed(() => dbUser.value || rootUserPlaceholder.value)
 
+  const isBranchLocked = computed(() => dbType.value === 'postgres')
+  watch(isBranchLocked, (locked) => {
+    if (locked) appBranch.value = POSTGRES_FRAMEWORK_BRANCH
+  })
   const branchOptions = computed(() =>
     branchComboboxOptions(availableBranches.value, appBranch.value, (typed: string) => {
       appBranch.value = typed
@@ -427,6 +433,7 @@ export const useSetup = () => {
     rootUserPlaceholder,
     dbTypeOptions: DB_TYPE_OPTIONS,
     branchOptions,
+    isBranchLocked,
     validatingFramework,
     frameworkIsValid,
     stepSequence,
